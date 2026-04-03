@@ -60,6 +60,11 @@ type CaptureSourceRow = {
   status: string;
   content_cached: number;
   truth_draft_count: number;
+  read_attempt_count: number;
+  extract_attempt_count: number;
+  last_read_attempt_at: string | null;
+  last_extract_attempt_at: string | null;
+  next_retry_at: string | null;
   fetched_at: string | null;
   extracted_at: string | null;
   error: string | null;
@@ -151,6 +156,11 @@ const mapSourceRow = (row: CaptureSourceRow): CaptureSource => ({
   status: row.status as CaptureSourceStatus,
   contentCached: row.content_cached === 1,
   truthDraftCount: row.truth_draft_count,
+  readAttemptCount: row.read_attempt_count,
+  extractAttemptCount: row.extract_attempt_count,
+  lastReadAttemptAt: row.last_read_attempt_at,
+  lastExtractAttemptAt: row.last_extract_attempt_at,
+  nextRetryAt: row.next_retry_at,
   fetchedAt: row.fetched_at,
   extractedAt: row.extracted_at,
   error: row.error,
@@ -215,9 +225,15 @@ export interface CaptureJobRepository {
   updateSource(
     sourceId: string,
     patch: {
+      position?: number;
       status?: CaptureSourceStatus;
       contentCached?: boolean;
       truthDraftCount?: number;
+      readAttemptCount?: number;
+      extractAttemptCount?: number;
+      lastReadAttemptAt?: string | null;
+      lastExtractAttemptAt?: string | null;
+      nextRetryAt?: string | null;
       fetchedAt?: string | null;
       extractedAt?: string | null;
       error?: string | null;
@@ -287,6 +303,11 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
       status TEXT NOT NULL,
       content_cached INTEGER NOT NULL DEFAULT 0,
       truth_draft_count INTEGER NOT NULL DEFAULT 0,
+      read_attempt_count INTEGER NOT NULL DEFAULT 0,
+      extract_attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_read_attempt_at TEXT,
+      last_extract_attempt_at TEXT,
+      next_retry_at TEXT,
       fetched_at TEXT,
       extracted_at TEXT,
       error TEXT,
@@ -329,6 +350,11 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
   ensureColumn("capture_job_truth_drafts", "options_json", "TEXT");
   ensureColumn("capture_job_truth_drafts", "answer", "TEXT");
   ensureColumn("capture_job_truth_drafts", "explanation", "TEXT");
+  ensureColumn("capture_job_sources", "read_attempt_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("capture_job_sources", "extract_attempt_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("capture_job_sources", "last_read_attempt_at", "TEXT");
+  ensureColumn("capture_job_sources", "last_extract_attempt_at", "TEXT");
+  ensureColumn("capture_job_sources", "next_retry_at", "TEXT");
 
   const insertJob = db.query(`
     INSERT INTO capture_jobs (
@@ -350,8 +376,10 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
   const deleteJobSources = db.query(`DELETE FROM capture_job_sources WHERE job_id = ?`);
   const insertJobSource = db.query(`
     INSERT INTO capture_job_sources (
-      id, job_id, position, url, title, snippet, status, content_cached, truth_draft_count, fetched_at, extracted_at, error
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, job_id, position, url, title, snippet, status, content_cached, truth_draft_count,
+      read_attempt_count, extract_attempt_count, last_read_attempt_at, last_extract_attempt_at, next_retry_at,
+      fetched_at, extracted_at, error
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const listSourcesQuery = db.query<CaptureSourceRow, [string]>(
     `SELECT * FROM capture_job_sources WHERE job_id = ? ORDER BY position ASC`,
@@ -536,6 +564,11 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
             "pending_read",
             cache?.content ? 1 : 0,
             0,
+            0,
+            0,
+            null,
+            null,
+            null,
             cache?.fetched_at ?? null,
             null,
             null,
@@ -559,9 +592,15 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
     },
     updateSource(sourceId, patch) {
       const entries = Object.entries({
+        position: patch.position,
         status: patch.status,
         content_cached: patch.contentCached === undefined ? undefined : Number(patch.contentCached),
         truth_draft_count: patch.truthDraftCount,
+        read_attempt_count: patch.readAttemptCount,
+        extract_attempt_count: patch.extractAttemptCount,
+        last_read_attempt_at: patch.lastReadAttemptAt,
+        last_extract_attempt_at: patch.lastExtractAttemptAt,
+        next_retry_at: patch.nextRetryAt,
         fetched_at: patch.fetchedAt,
         extracted_at: patch.extractedAt,
         error: patch.error,

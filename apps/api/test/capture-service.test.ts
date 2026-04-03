@@ -373,4 +373,370 @@ describe("capture-job-service", () => {
     const secondDetail = service.getJobDetail(secondJob.job.id)!;
     expect(secondDetail.events.some((event) => event.text.includes("shared AI extraction lane"))).toBe(true);
   });
+
+  test("requeues failed extraction sources to the end of the queue and retries them later", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
+    const databasePath = join(tempDirectory, "recall.sqlite");
+    temporaryDirectories.push(tempDirectory);
+
+    const repository = createSqliteCaptureJobRepository(databasePath);
+    const knowledgeStore = createSqlitePersistence(databasePath);
+    const extractOrder: string[] = [];
+    const extractAttempts = new Map<string, number>();
+    const searchHits = [
+      { title: "Frontend Guide", url: "https://example.com/frontend-guide", snippet: "Guide snippet" },
+      { title: "CSS Layout", url: "https://example.com/css-layout", snippet: "Layout snippet" },
+      { title: "JS Runtime", url: "https://example.com/js-runtime", snippet: "Runtime snippet" },
+    ];
+
+    const service = new PersistentCaptureJobService({
+      repository,
+      knowledgeStore,
+      retryPolicy: {
+        baseDelayMs: 20,
+        maxExtractAttempts: 2,
+      },
+      providers: [
+        {
+          kind: "grok-search",
+          async search() {
+            return searchHits;
+          },
+        },
+      ],
+      sourceReader: {
+        async read(hit) {
+          await sleep(5);
+
+          return {
+            ...hit,
+            content: `Article body for ${hit.title}`,
+          };
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [
+            {
+              id: "frontend",
+              parentId: null,
+              level: 1,
+              name: "Frontend",
+              description: "Frontend knowledge.",
+            },
+            {
+              id: "frontend.web",
+              parentId: "frontend",
+              level: 2,
+              name: "Web",
+              description: "Browser and document work.",
+            },
+            {
+              id: "frontend.web.basics",
+              parentId: "frontend.web",
+              level: 3,
+              name: "Basics",
+              description: "Core frontend fundamentals.",
+            },
+          ];
+        },
+      },
+      truthExtractor: {
+        async extract(input) {
+          const document = input.documents[0]!;
+          const attempt = (extractAttempts.get(document.title) ?? 0) + 1;
+
+          extractAttempts.set(document.title, attempt);
+          extractOrder.push(document.title);
+          await sleep(10);
+
+          if (document.title === "Frontend Guide" && attempt === 1) {
+            throw new Error("temporary extractor failure");
+          }
+
+          return [
+            {
+              sourceId: document.url,
+              statement: `${document.title} 里的高频题是什么？`,
+              summary: `${document.title} 的标准答案摘要`,
+              questionType: "open_ended",
+              answer: `${document.title} 的标准答案`,
+              explanation: `${document.title} 的展开说明`,
+              evidenceQuote: `Quote from ${document.title}`,
+              confidence: 0.91,
+            },
+          ];
+        },
+      },
+      tagClassifier: {
+        async classify(input: { truths: Array<unknown> }) {
+          return input.truths.map(() => ({
+            level1TagId: "frontend",
+            level2TagId: "frontend.web",
+            level3TagId: "frontend.web.basics",
+          }));
+        },
+      } as any,
+      embedder: {
+        async embed(input: { texts: string[] }) {
+          return input.texts.map(() => [0.1, 0.2, 0.3]);
+        },
+      },
+    });
+
+    const job = await service.createJob({
+      query: "frontend development",
+      provider: "grok-search",
+      searchLimit: 3,
+      readConcurrency: 1,
+    });
+
+    await waitFor(
+      () => repository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "ready_to_read",
+    );
+
+    await service.startProcessing({
+      jobId: job.job.id,
+      readConcurrency: 1,
+    });
+
+    const completedJob = await waitFor(
+      () => repository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "completed",
+      6000,
+    );
+
+    expect(completedJob.truthCount).toBe(3);
+    expect(extractOrder).toEqual(["Frontend Guide", "CSS Layout", "JS Runtime", "Frontend Guide"]);
+
+    const detail = service.getJobDetail(job.job.id)!;
+    const retriedSource = detail.sources.find((source) => source.title === "Frontend Guide");
+    const cssSource = detail.sources.find((source) => source.title === "CSS Layout");
+    const jsSource = detail.sources.find((source) => source.title === "JS Runtime");
+
+    expect(retriedSource?.extractAttemptCount).toBe(2);
+    expect(retriedSource?.position).toBeGreaterThan(cssSource?.position ?? -1);
+    expect(retriedSource?.position).toBeGreaterThan(jsSource?.position ?? -1);
+    expect(detail.events.some((event) => event.label === "RETRY" && event.text.includes("Re-queued to the end of the queue"))).toBe(true);
+  });
+
+  test("resumes in-flight source processing after a service restart", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
+    const databasePath = join(tempDirectory, "recall.sqlite");
+    temporaryDirectories.push(tempDirectory);
+
+    const repository = createSqliteCaptureJobRepository(databasePath);
+    const knowledgeStore = createSqlitePersistence(databasePath);
+    const blockedRead = new Promise<never>(() => {});
+
+    const firstService = new PersistentCaptureJobService({
+      repository,
+      knowledgeStore,
+      retryPolicy: {
+        baseDelayMs: 20,
+      },
+      providers: [
+        {
+          kind: "grok-search",
+          async search() {
+            return [
+              {
+                title: "React Guide",
+                url: "https://example.com/react-guide",
+                snippet: "React snippet",
+              },
+            ];
+          },
+        },
+      ],
+      sourceReader: {
+        async read() {
+          return blockedRead;
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [
+            {
+              id: "frontend",
+              parentId: null,
+              level: 1,
+              name: "Frontend",
+              description: "Frontend knowledge.",
+            },
+            {
+              id: "frontend.web",
+              parentId: "frontend",
+              level: 2,
+              name: "Web",
+              description: "Browser and document work.",
+            },
+            {
+              id: "frontend.web.basics",
+              parentId: "frontend.web",
+              level: 3,
+              name: "Basics",
+              description: "Core frontend fundamentals.",
+            },
+          ];
+        },
+      },
+      truthExtractor: {
+        async extract(input) {
+          const document = input.documents[0]!;
+
+          return [
+            {
+              sourceId: document.url,
+              statement: `${document.title} 里的高频题是什么？`,
+              summary: `${document.title} 的标准答案摘要`,
+              questionType: "open_ended",
+              answer: `${document.title} 的标准答案`,
+              explanation: `${document.title} 的展开说明`,
+              evidenceQuote: `Quote from ${document.title}`,
+              confidence: 0.9,
+            },
+          ];
+        },
+      },
+      tagClassifier: {
+        async classify(input: { truths: Array<unknown> }) {
+          return input.truths.map(() => ({
+            level1TagId: "frontend",
+            level2TagId: "frontend.web",
+            level3TagId: "frontend.web.basics",
+          }));
+        },
+      } as any,
+      embedder: {
+        async embed(input: { texts: string[] }) {
+          return input.texts.map(() => [0.1, 0.2, 0.3]);
+        },
+      },
+    });
+
+    const job = await firstService.createJob({
+      query: "react",
+      provider: "grok-search",
+      searchLimit: 1,
+      readConcurrency: 1,
+    });
+
+    await waitFor(
+      () => repository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "ready_to_read",
+    );
+
+    await firstService.startProcessing({
+      jobId: job.job.id,
+      readConcurrency: 1,
+    });
+
+    await waitFor(
+      () => firstService.getJobDetail(job.job.id)?.sources[0],
+      (source) => source.status === "reading",
+    );
+
+    const restartedRepository = createSqliteCaptureJobRepository(databasePath);
+    const restartedKnowledgeStore = createSqlitePersistence(databasePath);
+    const restartedService = new PersistentCaptureJobService({
+      repository: restartedRepository,
+      knowledgeStore: restartedKnowledgeStore,
+      retryPolicy: {
+        baseDelayMs: 20,
+      },
+      providers: [
+        {
+          kind: "grok-search",
+          async search() {
+            return [];
+          },
+        },
+      ],
+      sourceReader: {
+        async read(hit) {
+          await sleep(5);
+
+          return {
+            ...hit,
+            content: `Article body for ${hit.title}`,
+          };
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [
+            {
+              id: "frontend",
+              parentId: null,
+              level: 1,
+              name: "Frontend",
+              description: "Frontend knowledge.",
+            },
+            {
+              id: "frontend.web",
+              parentId: "frontend",
+              level: 2,
+              name: "Web",
+              description: "Browser and document work.",
+            },
+            {
+              id: "frontend.web.basics",
+              parentId: "frontend.web",
+              level: 3,
+              name: "Basics",
+              description: "Core frontend fundamentals.",
+            },
+          ];
+        },
+      },
+      truthExtractor: {
+        async extract(input) {
+          const document = input.documents[0]!;
+
+          return [
+            {
+              sourceId: document.url,
+              statement: `${document.title} 里的高频题是什么？`,
+              summary: `${document.title} 的标准答案摘要`,
+              questionType: "open_ended",
+              answer: `${document.title} 的标准答案`,
+              explanation: `${document.title} 的展开说明`,
+              evidenceQuote: `Quote from ${document.title}`,
+              confidence: 0.9,
+            },
+          ];
+        },
+      },
+      tagClassifier: {
+        async classify(input: { truths: Array<unknown> }) {
+          return input.truths.map(() => ({
+            level1TagId: "frontend",
+            level2TagId: "frontend.web",
+            level3TagId: "frontend.web.basics",
+          }));
+        },
+      } as any,
+      embedder: {
+        async embed(input: { texts: string[] }) {
+          return input.texts.map(() => [0.1, 0.2, 0.3]);
+        },
+      },
+    });
+
+    await restartedService.resumePendingJobs();
+
+    const completedJob = await waitFor(
+      () => restartedRepository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "completed",
+      6000,
+    );
+
+    expect(completedJob.truthCount).toBe(1);
+
+    const detail = restartedService.getJobDetail(job.job.id)!;
+    expect(detail.sources[0]?.readAttemptCount).toBe(2);
+    expect(detail.events.some((event) => event.label === "RECOVER" && event.text.includes("Recovered"))).toBe(true);
+  });
 });

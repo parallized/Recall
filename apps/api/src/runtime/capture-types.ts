@@ -45,6 +45,11 @@ export type CaptureSource = {
   status: CaptureSourceStatus;
   contentCached: boolean;
   truthDraftCount: number;
+  readAttemptCount: number;
+  extractAttemptCount: number;
+  lastReadAttemptAt: string | null;
+  lastExtractAttemptAt: string | null;
+  nextRetryAt: string | null;
   fetchedAt: string | null;
   extractedAt: string | null;
   error: string | null;

@@ -129,6 +129,7 @@ describe("api", () => {
     });
 
     const truthsResponse = await app.handle(new Request("http://localhost/truths"));
+    const repositoryResponse = await app.handle(new Request("http://localhost/repository"));
     const progressResponse = await app.handle(new Request("http://localhost/tags/progress"));
     const graphResponse = await app.handle(new Request("http://localhost/graph"));
     const recommendationResponse = await app.handle(
@@ -148,6 +149,87 @@ describe("api", () => {
         "Hooks 必须在每次渲染时保持相同调用顺序",
         "只有 useState 需要稳定顺序，其他 Hooks 不需要",
         "Hooks 可以放进条件分支里，只要开发者能保证逻辑正确",
+      ],
+    });
+    expect(await repositoryResponse.json()).toEqual({
+      summary: {
+        truthCount: 2,
+        level1TagCount: 1,
+        level2TagCount: 1,
+        level3TagCount: 1,
+        multipleChoiceCount: 1,
+        openEndedCount: 1,
+      },
+      taxonomy: [
+        {
+          id: "engineering",
+          parentId: null,
+          level: 1,
+          name: "Software Engineering",
+          description: "Programming, architecture, software delivery, and runtime systems.",
+          progress: 0.15,
+          truthCount: 2,
+        },
+        {
+          id: "frontend",
+          parentId: "engineering",
+          level: 2,
+          name: "Frontend Engineering",
+          description: "Browser runtime, UI composition, interaction models, and client state.",
+          progress: 0.15,
+          truthCount: 2,
+        },
+        {
+          id: "react",
+          parentId: "frontend",
+          level: 3,
+          name: "React",
+          description: "React rendering, hooks, component architecture, and state coordination.",
+          progress: 0.15,
+          truthCount: 2,
+        },
+      ],
+      truths: [
+        {
+          id: "truth-2",
+          statement: "关于 Hooks 的调用顺序，下面哪项是正确的？",
+          summary: "Hooks 必须在每次渲染时保持相同调用顺序。",
+          questionType: "multiple_choice",
+          options: [
+            "只要组件最终渲染成功，Hooks 顺序可以变化",
+            "Hooks 必须在每次渲染时保持相同调用顺序",
+            "只有 useState 需要稳定顺序，其他 Hooks 不需要",
+            "Hooks 可以放进条件分支里，只要开发者能保证逻辑正确",
+          ],
+          answer: "Hooks 必须在每次渲染时保持相同调用顺序",
+          explanation: "React 依赖 Hook 调用顺序去把状态槽位和具体 Hook 对应起来。",
+          evidenceQuote: "Hooks rely on call order.",
+          confidence: 0.88,
+          sourceUrl: "https://react.dev",
+          level1TagId: "engineering",
+          level2TagId: "frontend",
+          level3TagId: "react",
+          level1TagName: "Software Engineering",
+          level2TagName: "Frontend Engineering",
+          level3TagName: "React",
+        },
+        {
+          id: "truth-1",
+          statement: "React 在同一个事件循环中会如何处理多次 state update？",
+          summary: "同一事件中的更新会被批处理。",
+          questionType: "open_ended",
+          answer: "React 会把同一事件循环中的多次 state 更新批处理后再统一提交，以减少重复渲染。",
+          explanation: "这是 React 渲染性能优化的核心机制之一，也是面试中常见的开放题。",
+          evidenceQuote: "React batches updates within one event.",
+          confidence: 0.92,
+          sourceUrl: "https://react.dev",
+          level1TagId: "engineering",
+          level2TagId: "frontend",
+          level3TagId: "react",
+          level1TagName: "Software Engineering",
+          level2TagName: "Frontend Engineering",
+          level3TagName: "React",
+        },
       ],
     });
     expect(await graphResponse.json()).toEqual([

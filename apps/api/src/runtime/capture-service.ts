@@ -30,6 +30,13 @@ type CaptureJobServiceDependencies = {
   tagClassifier: HybridHierarchicalTagClassifier;
   embedder: EmbeddingService;
   knowledgeStore: KnowledgeStore;
+  retryPolicy?: Partial<CaptureJobRetryPolicy>;
+};
+
+type CaptureJobRetryPolicy = {
+  maxReadAttempts: number;
+  maxExtractAttempts: number;
+  baseDelayMs: number;
 };
 
 type DocumentWaiter<T> = (value: T | null) => void;
@@ -136,6 +143,7 @@ const dedupeHits = (hits: Awaited<ReturnType<SearchProvider["search"]>>) => {
 };
 
 const toErrorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const describeStudyCard = (truth: Pick<TruthDraft, "statement" | "summary" | "answer" | "explanation" | "options">) =>
   [
     truth.statement,
@@ -146,6 +154,12 @@ const describeStudyCard = (truth: Pick<TruthDraft, "statement" | "summary" | "an
   ]
     .filter(Boolean)
     .join("\n");
+
+const defaultRetryPolicy: CaptureJobRetryPolicy = {
+  maxReadAttempts: 3,
+  maxExtractAttempts: 3,
+  baseDelayMs: 3_000,
+};
 
 const runWithConcurrency = async <T>(
   items: T[],
@@ -182,8 +196,14 @@ export interface CaptureJobService {
 export class PersistentCaptureJobService implements CaptureJobService {
   private readonly runningJobs = new Map<string, Promise<void>>();
   private readonly extractionMutex = new AsyncMutex();
+  private readonly retryPolicy: CaptureJobRetryPolicy;
 
-  constructor(private readonly options: CaptureJobServiceDependencies) {}
+  constructor(private readonly options: CaptureJobServiceDependencies) {
+    this.retryPolicy = {
+      ...defaultRetryPolicy,
+      ...options.retryPolicy,
+    };
+  }
 
   listJobs() {
     return this.options.repository.listJobs();
@@ -278,6 +298,84 @@ export class PersistentCaptureJobService implements CaptureJobService {
         this.options.repository.addUsage(jobId, event.usage);
       }
     };
+  }
+
+  private isRetryReady(source: CaptureSource) {
+    return !source.nextRetryAt || Date.parse(source.nextRetryAt) <= Date.now();
+  }
+
+  private getRetryDelayMs(attemptCount: number) {
+    return this.retryPolicy.baseDelayMs * 2 ** Math.max(0, attemptCount - 1);
+  }
+
+  private formatRetryDelay(delayMs: number) {
+    if (delayMs < 1_000) {
+      return `${delayMs}ms`;
+    }
+
+    const seconds = delayMs / 1_000;
+    return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
+  }
+
+  private getQueueTailPosition(jobId: string) {
+    return this.options.repository.listSources(jobId).reduce((max, source) => Math.max(max, source.position), -1) + 1;
+  }
+
+  private getNextRetryWaitMs(sources: CaptureSource[]) {
+    const waits = sources
+      .filter((source) => source.status === "pending_read" || source.status === "pending_extract")
+      .map((source) => (source.nextRetryAt ? Date.parse(source.nextRetryAt) - Date.now() : 0))
+      .filter((delayMs) => delayMs > 0);
+
+    if (waits.length === 0) {
+      return null;
+    }
+
+    return Math.min(...waits);
+  }
+
+  private async scheduleRetry(input: {
+    jobId: string;
+    source: CaptureSource;
+    stage: "read" | "extract";
+    attemptCount: number;
+    error: string;
+  }) {
+    const maxAttempts =
+      input.stage === "read" ? this.retryPolicy.maxReadAttempts : this.retryPolicy.maxExtractAttempts;
+
+    if (input.attemptCount >= maxAttempts) {
+      this.options.repository.updateSource(input.source.id, {
+        status: "failed",
+        nextRetryAt: null,
+        truthDraftCount: input.stage === "extract" ? 0 : input.source.truthDraftCount,
+        error: input.error,
+      });
+      this.appendError(
+        input.jobId,
+        "RETRY",
+        `${input.source.title}: ${input.stage} failed after ${input.attemptCount} attempts. ${input.error}`,
+      );
+      return;
+    }
+
+    const delayMs = this.getRetryDelayMs(input.attemptCount);
+    const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
+    const nextStatus = input.stage === "read" ? "pending_read" : "pending_extract";
+    const queueTail = this.getQueueTailPosition(input.jobId);
+
+    this.options.repository.updateSource(input.source.id, {
+      position: queueTail,
+      status: nextStatus,
+      nextRetryAt,
+      truthDraftCount: input.stage === "extract" ? 0 : input.source.truthDraftCount,
+      error: input.error,
+    });
+    this.appendStatus(
+      input.jobId,
+      "RETRY",
+      `${input.source.title}: ${input.stage} failed (${input.attemptCount}/${maxAttempts}). Re-queued to the end of the queue; retry in ${this.formatRetryDelay(delayMs)}.`,
+    );
   }
 
   private resolveProvider(kind: SearchProviderKind) {
@@ -403,56 +501,117 @@ export class PersistentCaptureJobService implements CaptureJobService {
 
   private async resumeInterruptedSources(jobId: string) {
     const sources = this.options.repository.listSources(jobId);
+    let recoveredCount = 0;
 
     for (const source of sources) {
       if (source.status === "reading") {
         this.options.repository.updateSource(source.id, {
           status: source.contentCached ? "pending_extract" : "pending_read",
+          nextRetryAt: null,
           error: null,
         });
+        recoveredCount += 1;
       }
 
       if (source.status === "extracting") {
         this.options.repository.updateSource(source.id, {
           status: "pending_extract",
+          nextRetryAt: null,
           error: null,
         });
+        recoveredCount += 1;
       }
+
+      if (
+        source.status === "failed" &&
+        !source.contentCached &&
+        source.readAttemptCount < this.retryPolicy.maxReadAttempts
+      ) {
+        this.options.repository.updateSource(source.id, {
+          status: "pending_read",
+          nextRetryAt: null,
+        });
+        recoveredCount += 1;
+      }
+
+      if (
+        source.status === "failed" &&
+        source.contentCached &&
+        source.extractAttemptCount < this.retryPolicy.maxExtractAttempts
+      ) {
+        this.options.repository.updateSource(source.id, {
+          status: "pending_extract",
+          nextRetryAt: null,
+        });
+        recoveredCount += 1;
+      }
+    }
+
+    if (recoveredCount > 0) {
+      this.appendStatus(jobId, "RECOVER", `Recovered ${recoveredCount} unfinished or retryable sources after restart.`);
     }
   }
 
   private async processSources(jobId: string, reporter: ProgressReporter) {
     const job = this.requireJob(jobId);
-    const queue = new AsyncQueue<QueuedDocument>();
-    const sources = this.options.repository.listSources(jobId);
-    const preloadedSources = sources.filter((source) => source.status === "pending_extract");
-    const cachedSources = sources.filter((source) => {
-      if (source.status !== "pending_read" && source.status !== "failed") {
-        return false;
+    while (true) {
+      const queue = new AsyncQueue<QueuedDocument>();
+      const sources = this.options.repository.listSources(jobId);
+      const preloadedSources = sources.filter(
+        (source) => source.status === "pending_extract" && this.isRetryReady(source),
+      );
+      const cachedSources = sources.filter((source) => {
+        if (source.status !== "pending_read" || !this.isRetryReady(source)) {
+          return false;
+        }
+
+        return Boolean(this.options.repository.getSourceCache(source.url)?.content);
+      });
+      const networkSources = sources.filter((source) => {
+        if (source.status !== "pending_read" || !this.isRetryReady(source)) {
+          return false;
+        }
+
+        return !this.options.repository.getSourceCache(source.url)?.content;
+      });
+
+      if (preloadedSources.length === 0 && cachedSources.length === 0 && networkSources.length === 0) {
+        const hasPendingSources = sources.some(
+          (source) => source.status === "pending_read" || source.status === "pending_extract",
+        );
+
+        if (!hasPendingSources) {
+          break;
+        }
+
+        const waitMs = this.getNextRetryWaitMs(sources);
+
+        if (waitMs === null) {
+          break;
+        }
+
+        this.appendStatus(
+          jobId,
+          "RETRY",
+          `Waiting ${this.formatRetryDelay(waitMs)} before retrying deferred sources.`,
+        );
+        await sleep(waitMs);
+        continue;
       }
 
-      return Boolean(this.options.repository.getSourceCache(source.url)?.content);
-    });
-    const networkSources = sources.filter((source) => {
-      if (source.status !== "pending_read" && source.status !== "failed") {
-        return false;
+      for (const source of [...preloadedSources, ...cachedSources]) {
+        await this.enqueueCachedSource(jobId, source, queue);
       }
 
-      return !this.options.repository.getSourceCache(source.url)?.content;
-    });
+      const aiWorker = this.consumeQueuedDocuments(jobId, queue, reporter);
 
-    for (const source of [...preloadedSources, ...cachedSources]) {
-      await this.enqueueCachedSource(jobId, source, queue);
+      await runWithConcurrency(networkSources, job.readConcurrency, async (source) => {
+        await this.readSource(jobId, source, queue);
+      });
+
+      queue.close();
+      await aiWorker;
     }
-
-    const aiWorker = this.consumeQueuedDocuments(jobId, queue, reporter);
-
-    await runWithConcurrency(networkSources, job.readConcurrency, async (source) => {
-      await this.readSource(jobId, source, queue);
-    });
-
-    queue.close();
-    await aiWorker;
   }
 
   private async enqueueCachedSource(jobId: string, source: CaptureSource, queue: AsyncQueue<QueuedDocument>) {
@@ -465,6 +624,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     const updatedSource = this.options.repository.updateSource(source.id, {
       status: "pending_extract",
       contentCached: true,
+      nextRetryAt: null,
       fetchedAt: cache.fetchedAt,
       error: null,
     });
@@ -482,8 +642,12 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private async readSource(jobId: string, source: CaptureSource, queue: AsyncQueue<QueuedDocument>) {
+    const startedAt = new Date().toISOString();
     this.options.repository.updateSource(source.id, {
       status: "reading",
+      readAttemptCount: source.readAttemptCount + 1,
+      lastReadAttemptAt: startedAt,
+      nextRetryAt: null,
       error: null,
     });
     this.appendStatus(jobId, "READ", `Fetching ${source.title}.`);
@@ -508,6 +672,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       const updatedSource = this.options.repository.updateSource(source.id, {
         status: "pending_extract",
         contentCached: true,
+        nextRetryAt: null,
         fetchedAt,
         error: null,
       });
@@ -519,10 +684,6 @@ export class PersistentCaptureJobService implements CaptureJobService {
       });
     } catch (error) {
       const message = toErrorMessage(error);
-      this.options.repository.updateSource(source.id, {
-        status: "failed",
-        error: message,
-      });
       this.options.repository.upsertSourceCache({
         url: source.url,
         title: source.title,
@@ -531,7 +692,16 @@ export class PersistentCaptureJobService implements CaptureJobService {
         fetchedAt: null,
         error: message,
       });
-      this.appendError(jobId, "READ", `${source.title}: ${message}`);
+      await this.scheduleRetry({
+        jobId,
+        source: {
+          ...source,
+          readAttemptCount: source.readAttemptCount + 1,
+        },
+        stage: "read",
+        attemptCount: source.readAttemptCount + 1,
+        error: message,
+      });
     }
   }
 
@@ -546,8 +716,12 @@ export class PersistentCaptureJobService implements CaptureJobService {
       this.appendStatus(jobId, "QUESTION", `${item.source.title}: waiting for the shared AI extraction lane.`);
 
       await this.extractionMutex.runExclusive(async () => {
+        const startedAt = new Date().toISOString();
         const source = this.options.repository.updateSource(item.source.id, {
           status: "extracting",
+          extractAttemptCount: item.source.extractAttemptCount + 1,
+          lastExtractAttemptAt: startedAt,
+          nextRetryAt: null,
           error: null,
         });
         this.appendStatus(jobId, "QUESTION", `Extracting study questions from ${source.title}.`);
@@ -563,18 +737,20 @@ export class PersistentCaptureJobService implements CaptureJobService {
           this.options.repository.updateSource(source.id, {
             status: "completed",
             truthDraftCount: drafts.length,
+            nextRetryAt: null,
             extractedAt: new Date().toISOString(),
             error: null,
           });
           this.appendStatus(jobId, "QUESTION", `${source.title}: extracted ${drafts.length} study-question drafts.`);
         } catch (error) {
           const message = toErrorMessage(error);
-          this.options.repository.updateSource(source.id, {
-            status: "failed",
-            truthDraftCount: 0,
+          await this.scheduleRetry({
+            jobId,
+            source,
+            stage: "extract",
+            attemptCount: source.extractAttemptCount,
             error: message,
           });
-          this.appendError(jobId, "QUESTION", `${source.title}: ${message}`);
         }
       });
     }

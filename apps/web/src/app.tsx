@@ -16,6 +16,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import RepositoryView from "./repository-view";
 
 // --- Utilities ---
 function cn(...inputs: ClassValue[]) {
@@ -551,10 +552,10 @@ export const App = () => {
               {view === "dashboard" && <DashboardView progress={progress} />}
               {view === "search" && <SearchView />}
               {view === "truths" && (
-                <div className="flex flex-col items-center justify-center h-[60vh] text-ink/20 space-y-4 animate-in fade-in duration-700">
-                  <Database className="w-16 h-16 opacity-10" />
-                  <p className="font-bold tracking-widest uppercase text-xs">知识库视图构建中</p>
-                </div>
+                <RepositoryView
+                  apiBaseUrl={API_BASE_URL}
+                  refreshKey={selectedCaptureJob?.job.collectionId ?? null}
+                />
               )}
               {view === "collect" && (
                 <div className="min-h-screen bg-white animate-in fade-in duration-700">

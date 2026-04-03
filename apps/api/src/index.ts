@@ -67,6 +67,42 @@ const isInvalidStreamStateError = (error: unknown) =>
   typeof (error as { code?: unknown }).code === "string" &&
   (error as { code?: string }).code === "ERR_INVALID_STATE";
 
+const buildRepositorySnapshot = (persistence: KnowledgeStore) => {
+  const taxonomy = persistence.getTaxonomy();
+  const truths = persistence.listTruths();
+  const progressByNodeId = new Map(persistence.listTagProgress().map((entry) => [entry.nodeId, entry]));
+  const nodeById = new Map(taxonomy.map((node) => [node.id, node]));
+
+  return {
+    summary: {
+      truthCount: truths.length,
+      level1TagCount: taxonomy.filter((node) => node.level === 1).length,
+      level2TagCount: taxonomy.filter((node) => node.level === 2).length,
+      level3TagCount: taxonomy.filter((node) => node.level === 3).length,
+      multipleChoiceCount: truths.filter((truth) => truth.questionType === "multiple_choice").length,
+      openEndedCount: truths.filter((truth) => truth.questionType !== "multiple_choice").length,
+    },
+    taxonomy: taxonomy.map((node) => ({
+      ...node,
+      progress: progressByNodeId.get(node.id)?.progress ?? 0,
+      truthCount: progressByNodeId.get(node.id)?.truthCount ?? 0,
+    })),
+    truths: truths
+      .map((truth) => ({
+        ...truth,
+        level1TagName: nodeById.get(truth.level1TagId)?.name ?? truth.level1TagId,
+        level2TagName: nodeById.get(truth.level2TagId)?.name ?? truth.level2TagId,
+        level3TagName: nodeById.get(truth.level3TagId)?.name ?? truth.level3TagId,
+      }))
+      .sort((left, right) =>
+        `${left.level1TagName}/${left.level2TagName}/${left.level3TagName}/${left.statement}`.localeCompare(
+          `${right.level1TagName}/${right.level2TagName}/${right.level3TagName}/${right.statement}`,
+          "zh-CN",
+        ),
+      ),
+  };
+};
+
 export const createApp = ({
   pipeline,
   persistence,
@@ -94,6 +130,7 @@ export const createApp = ({
     })
     .get("/health", () => ({ status: "ok" }))
     .get("/truths", () => persistence.listTruths())
+    .get("/repository", () => buildRepositorySnapshot(persistence))
     .get("/tags/progress", () => persistence.listTagProgress())
     .get("/graph", () => {
       const taxonomy = persistence.getTaxonomy();
