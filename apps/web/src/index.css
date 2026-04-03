@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #ffffff;
+  --color-ink: #37352f;
+  --color-accent: #2eaadc;
+  --color-ember: #eb5757;
+  --color-fog: #f7f7f5;
+  --color-line: #e9e9e7;
+}
+
+@layer base {
+
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "recall",
+  "private": true,
+  "packageManager": "bun@1.3.10",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n web,api -c blue,green \"bun run dev:web\" \"bun run dev:api\"",
+    "dev:web": "bun run --cwd apps/web dev -- --host 0.0.0.0 --port 4173",
+    "dev:api": "bun --env-file apps/api/.env --watch apps/api/src/index.ts",
+    "dev:mcp": "bun --env-file apps/mcp-server/.env --watch apps/mcp-server/src/index.ts",
+    "build": "bun run --filter '*' build",
+    "test": "bun test",
+    "typecheck": "bun run --filter '*' typecheck"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "bun-types": "^1.3.10",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}

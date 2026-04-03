@@ -1,0 +1,20 @@
+{
+  "name": "@recall/api",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --env-file .env --watch src/index.ts",
+    "build": "bun build src/index.ts --target bun --outdir dist",
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@elysiajs/cors": "^1.4.0",
+    "@mozilla/readability": "^0.6.0",
+    "@recall/domain": "workspace:*",
+    "@xenova/transformers": "^2.17.2",
+    "elysia": "^1.4.10",
+    "linkedom": "^0.18.12",
+    "zod": "^4.1.12"
+  }
+}

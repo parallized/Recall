@@ -1,0 +1,17 @@
+{
+  "name": "@recall/mcp-server",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --env-file .env --watch src/index.ts",
+    "build": "bun build src/index.ts --target bun --outdir dist",
+    "test": "bun test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@recall/api": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.18.1",
+    "@recall/domain": "workspace:*",
+    "zod": "^4.1.12"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+.idea
+.vscode
+dist
+build
+.turbo
+.DS_Store
+*.log
+apps/api/data
+apps/api/.env
+apps/api/.env.local
+apps/web/.env
+apps/web/.env.local
+apps/mcp-server/.env
+apps/mcp-server/.env.local
