@@ -12,6 +12,7 @@ import { cosineSimilarity } from "./embedder";
 import type {
   ChatJsonGateway,
   EmbeddingService,
+  ProgressReporter,
   SearchProvider,
   SourceContentReader,
   SourceDocument,
@@ -90,7 +91,7 @@ const mergeTaxonomy = (existingNodes: TaxonomyNode[], plannedNodes: TaxonomyNode
 export class AiTaxonomyPlanner implements TaxonomyPlanner {
   constructor(private readonly gateway: ChatJsonGateway) {}
 
-  async plan(input: { query: string; existingNodes: TaxonomyNode[] }): Promise<TaxonomyNode[]> {
+  async plan(input: { query: string; existingNodes: TaxonomyNode[]; reporter?: ProgressReporter }): Promise<TaxonomyNode[]> {
     const existingSummary = input.existingNodes
       .slice(0, 50)
       .map((node) => `${node.level}:${node.id}:${node.name}`)
@@ -111,6 +112,7 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
         "Avoid duplicating existing nodes when the same semantic concept already exists.",
         `Existing nodes:\n${existingSummary || "none"}`,
       ].join("\n\n"),
+      reporter: input.reporter,
     });
 
     const level1Id = toNodeId(null, payload.level1.name);
@@ -152,7 +154,7 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
 export class AiTruthExtractor implements TruthExtractor {
   constructor(private readonly gateway: ChatJsonGateway) {}
 
-  async extract(input: { query: string; documents: SourceDocument[] }): Promise<TruthDraft[]> {
+  async extract(input: { query: string; documents: SourceDocument[]; reporter?: ProgressReporter }): Promise<TruthDraft[]> {
     const drafts: TruthDraft[] = [];
 
     for (const document of chunkDocuments(input.documents)) {
@@ -173,6 +175,7 @@ export class AiTruthExtractor implements TruthExtractor {
           "Extract 4 to 8 high-value truths. Quotes must be copied from the source text exactly as evidence.",
           `Source text:\n${document.content}`,
         ].join("\n\n"),
+        reporter: input.reporter,
       });
 
       for (const truth of payload.truths) {
@@ -245,6 +248,7 @@ export class HybridHierarchicalTagClassifier {
   async classify(input: {
     truths: TruthDraft[];
     taxonomy: TaxonomyNode[];
+    reporter?: ProgressReporter;
   }): Promise<Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">>> {
     const nodeEmbeddings = await this.options.embedder.embed({
       texts: input.taxonomy.map(nodeDescriptor),
@@ -282,6 +286,7 @@ export class HybridHierarchicalTagClassifier {
             )
             .join("\n\n")}`,
         ].join("\n\n"),
+        reporter: input.reporter,
       });
 
       const matchedCandidate = topPaths.find(
@@ -322,6 +327,7 @@ export class KnowledgeCollectionOrchestrator {
   async collect(input: {
     query: string;
     provider: SearchProviderKind;
+    reporter?: ProgressReporter;
   }): Promise<CollectionResult> {
     const provider = this.options.providers.find((candidate) => candidate.kind === input.provider);
 
@@ -329,9 +335,34 @@ export class KnowledgeCollectionOrchestrator {
       throw new Error(`Search provider not configured: ${input.provider}`);
     }
 
+    await input.reporter?.({
+      type: "phase",
+      phase: "search",
+      status: "start",
+      message: `Starting ${input.provider} search.`,
+      provider: input.provider,
+    });
+
     const searchHits = await provider.search({
       query: input.query,
       limit: 5,
+      reporter: input.reporter,
+    });
+
+    await input.reporter?.({
+      type: "phase",
+      phase: "search",
+      status: "complete",
+      message: `Search returned ${searchHits.length} hits.`,
+      count: searchHits.length,
+      provider: input.provider,
+    });
+
+    await input.reporter?.({
+      type: "phase",
+      phase: "read",
+      status: "start",
+      message: "Reading and simplifying source pages.",
     });
 
     const readableDocuments = (
@@ -340,33 +371,98 @@ export class KnowledgeCollectionOrchestrator {
       .flatMap((result) => (result.status === "fulfilled" ? [result.value] : []))
       .slice(0, 5);
 
+    await input.reporter?.({
+      type: "phase",
+      phase: "read",
+      status: "complete",
+      message: `Prepared ${readableDocuments.length} readable documents.`,
+      count: readableDocuments.length,
+    });
+
     if (readableDocuments.length === 0) {
       throw new Error("Unable to extract any readable source documents from search results.");
     }
 
     const existingTaxonomy = this.options.taxonomyStore.getTaxonomy();
+    await input.reporter?.({
+      type: "phase",
+      phase: "taxonomy",
+      status: "start",
+      message: "Planning the three-level taxonomy.",
+    });
     const plannedTaxonomy = await this.options.taxonomyPlanner.plan({
       query: input.query,
       existingNodes: existingTaxonomy,
+      reporter: input.reporter,
+    });
+    await input.reporter?.({
+      type: "phase",
+      phase: "taxonomy",
+      status: "complete",
+      message: `Generated ${plannedTaxonomy.length} taxonomy nodes.`,
+      count: plannedTaxonomy.length,
     });
     const taxonomy = mergeTaxonomy(existingTaxonomy, plannedTaxonomy);
+
+    await input.reporter?.({
+      type: "phase",
+      phase: "truths",
+      status: "start",
+      message: "Extracting atomic truths from source documents.",
+    });
     const truthDrafts = deduplicateTruths(
       await this.options.truthExtractor.extract({
         query: input.query,
         documents: readableDocuments,
+        reporter: input.reporter,
       }),
     );
+    await input.reporter?.({
+      type: "phase",
+      phase: "truths",
+      status: "complete",
+      message: `Extracted ${truthDrafts.length} truth drafts.`,
+      count: truthDrafts.length,
+    });
 
     if (truthDrafts.length === 0) {
       throw new Error("Truth extraction returned zero atomic truths.");
     }
 
+    await input.reporter?.({
+      type: "phase",
+      phase: "classify",
+      status: "start",
+      message: "Binding each truth to one taxonomy path.",
+    });
     const tagAssignments = await this.options.tagClassifier.classify({
       truths: truthDrafts,
       taxonomy,
+      reporter: input.reporter,
+    });
+    await input.reporter?.({
+      type: "phase",
+      phase: "classify",
+      status: "complete",
+      message: `Classified ${tagAssignments.length} truth assignments.`,
+      count: tagAssignments.length,
+    });
+
+    await input.reporter?.({
+      type: "phase",
+      phase: "embed",
+      status: "start",
+      message: "Embedding truths for semantic search and recall.",
     });
     const embeddings = await this.options.embedder.embed({
       texts: truthDrafts.map((truth) => `${truth.statement}\n${truth.summary}`),
+    });
+    await input.reporter?.({
+      type: "phase",
+      phase: "embed",
+      status: "complete",
+      message: `Embedded ${embeddings.length} truths.`,
+      count: embeddings.length,
     });
 
     const truths: CollectedTruth[] = truthDrafts.map((truth, index) => ({

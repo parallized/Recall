@@ -6,7 +6,12 @@ build
 .turbo
 .DS_Store
 *.log
+.codex/
+data/
+*.sqlite
+*.sqlite-*
 apps/api/data
+apps/api/logs
 apps/api/.env
 apps/api/.env.local
 apps/web/.env

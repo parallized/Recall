@@ -1,9 +1,14 @@
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { GrokWebSearchProvider } from "../src/runtime/search";
 
 describe("search-provider", () => {
   const originalFetch = globalThis.fetch;
+  const temporaryDirectories: string[] = [];
 
   beforeEach(() => {
     mock.restore();
@@ -13,7 +18,21 @@ describe("search-provider", () => {
     globalThis.fetch = originalFetch;
   });
 
+  afterEach(async () => {
+    await Promise.all(
+      temporaryDirectories.splice(0).map((directory) =>
+        rm(directory, {
+          recursive: true,
+          force: true,
+        }),
+      ),
+    );
+  });
+
   test("grok-search uses the OpenAI-compatible chat gateway and parses raw JSON results", async () => {
+    const reporter = mock(() => {});
+    const logsRoot = await mkdtemp(join(tmpdir(), "recall-grok-search-"));
+    temporaryDirectories.push(logsRoot);
     const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe("https://ai.huan666.de/v1/chat/completions");
       expect(init?.method).toBe("POST");
@@ -27,6 +46,7 @@ describe("search-provider", () => {
       expect(body.model).toBe("grok-4.20-beta");
       expect(body.stream).toBe(false);
       expect(body.temperature).toBe(0);
+      expect(body.response_format).toEqual({ type: "json_object" });
       expect(body.messages).toHaveLength(2);
       expect(body.messages[0].role).toBe("system");
       expect(body.messages[0].content).toContain("Use live web search");
@@ -37,6 +57,11 @@ describe("search-provider", () => {
 
       return new Response(
         JSON.stringify({
+          usage: {
+            prompt_tokens: 11,
+            completion_tokens: 7,
+            total_tokens: 18,
+          },
           choices: [
             {
               message: {
@@ -65,11 +90,13 @@ describe("search-provider", () => {
       baseUrl: "https://ai.huan666.de/v1",
       apiKey: "test-key",
       model: "grok-4.20-beta",
+      logsRoot,
     });
 
     const results = await provider.search({
       query: "React concurrent rendering",
       limit: 2,
+      reporter,
     });
 
     expect(results).toEqual([
@@ -85,9 +112,30 @@ describe("search-provider", () => {
       },
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(reporter).toHaveBeenCalledWith({
+      type: "usage",
+      scope: "search",
+      usage: {
+        promptTokens: 11,
+        completionTokens: 7,
+        totalTokens: 18,
+      },
+    });
+
+    const [logDirectory] = await readdir(logsRoot);
+    const inputFile = await readFile(join(logsRoot, logDirectory, "input.json"), "utf8");
+    const outputFile = await readFile(join(logsRoot, logDirectory, "output.txt"), "utf8");
+
+    expect(inputFile).toContain('"provider": "grok-search"');
+    expect(inputFile).toContain('"query": "React concurrent rendering"');
+    expect(outputFile).toContain('\\"title\\":\\"React docs\\"');
+    expect(outputFile).toContain('"parsedJson": {');
   });
 
   test("grok-search rejects invalid model output instead of silently accepting prose", async () => {
+    const logsRoot = await mkdtemp(join(tmpdir(), "recall-grok-search-"));
+    temporaryDirectories.push(logsRoot);
+
     globalThis.fetch = mock(async () =>
       new Response(
         JSON.stringify({
@@ -110,6 +158,7 @@ describe("search-provider", () => {
       baseUrl: "https://ai.huan666.de/v1",
       apiKey: "test-key",
       model: "grok-4.20-beta",
+      logsRoot,
     });
 
     await expect(
@@ -117,6 +166,12 @@ describe("search-provider", () => {
         query: "React concurrent rendering",
         limit: 3,
       }),
-    ).rejects.toThrow("Grok web search returned invalid JSON.");
+    ).rejects.toThrow(/Grok web search returned invalid JSON\./);
+
+    const [logDirectory] = await readdir(logsRoot);
+    const outputFile = await readFile(join(logsRoot, logDirectory, "output.txt"), "utf8");
+
+    expect(outputFile).toContain("Here are some useful links");
+    expect(outputFile).toContain("Grok web search returned invalid JSON.");
   });
 });

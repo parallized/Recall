@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import type { SearchHit, SearchProvider } from "./types";
+import { createCallLog, withLogDirectory } from "./call-log";
+import type { SearchHit, SearchProvider, TokenUsage } from "./types";
 
 const webSearchResponseSchema = z.object({
   results: z.array(
@@ -21,6 +22,15 @@ const stripJsonFence = (content: string) =>
     .trim();
 
 const normalizeBaseUrl = (value: string) => value.replace(/\/+$/, "");
+const normalizeUsage = (usage?: {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}): TokenUsage => ({
+  promptTokens: usage?.prompt_tokens ?? 0,
+  completionTokens: usage?.completion_tokens ?? 0,
+  totalTokens: usage?.total_tokens ?? 0,
+});
 
 const grokSearchSystemPrompt = [
   "You are a live web search engine running inside a knowledge ingestion pipeline.",
@@ -50,7 +60,7 @@ export class DirectWebSearchApiProvider implements SearchProvider {
     },
   ) {}
 
-  async search(input: { query: string; limit: number }): Promise<SearchHit[]> {
+  async search(input: { query: string; limit: number; reporter?: import("./types").ProgressReporter }): Promise<SearchHit[]> {
     const response = await fetch(this.options.baseUrl, {
       method: "POST",
       headers: {
@@ -79,60 +89,111 @@ export class GrokWebSearchProvider implements SearchProvider {
       baseUrl: string;
       apiKey: string;
       model: string;
+      logsRoot?: string;
     },
   ) {}
 
-  async search(input: { query: string; limit: number }): Promise<SearchHit[]> {
-    const response = await fetch(`${normalizeBaseUrl(this.options.baseUrl)}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.options.apiKey}`,
-        "Content-Type": "application/json",
+  async search(input: { query: string; limit: number; reporter?: import("./types").ProgressReporter }): Promise<SearchHit[]> {
+    const requestBody = {
+      model: this.options.model,
+      stream: false,
+      temperature: 0,
+      response_format: {
+        type: "json_object",
       },
-      body: JSON.stringify({
-        model: this.options.model,
-        stream: false,
-        temperature: 0,
-        messages: [
-          {
-            role: "system",
-            content: grokSearchSystemPrompt,
-          },
-          {
-            role: "user",
-            content: buildGrokSearchUserPrompt(input),
-          },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Grok web search failed with status ${response.status}.`);
-    }
-
-    const payload = (await response.json()) as {
-      choices?: Array<{
-        message?: {
-          content?: string;
-        };
-      }>;
+      messages: [
+        {
+          role: "system",
+          content: grokSearchSystemPrompt,
+        },
+        {
+          role: "user",
+          content: buildGrokSearchUserPrompt(input),
+        },
+      ],
     };
-
-    const content = payload.choices?.[0]?.message?.content;
-
-    if (!content) {
-      throw new Error("Grok web search response did not include message content.");
-    }
-
-    let parsed: unknown;
+    const log = await createCallLog({
+      rootDir: this.options.logsRoot,
+      label: `${this.kind}-${input.query}`,
+      inputPayload: {
+        type: "search",
+        provider: this.kind,
+        query: input.query,
+        limit: input.limit,
+        model: this.options.model,
+        baseUrl: normalizeBaseUrl(this.options.baseUrl),
+        request: requestBody,
+      },
+    });
+    let rawOutput = "";
+    let parsedJson: unknown;
+    let usage: TokenUsage | undefined;
+    let failureMessage: string | undefined;
 
     try {
-      parsed = JSON.parse(stripJsonFence(content));
-    } catch {
-      throw new Error("Grok web search returned invalid JSON.");
-    }
+      const response = await fetch(`${normalizeBaseUrl(this.options.baseUrl)}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.options.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
 
-    return webSearchResponseSchema.parse(parsed).results.slice(0, input.limit);
+      if (!response.ok) {
+        rawOutput = await response.text();
+        throw new Error(`Grok web search failed with status ${response.status}.`);
+      }
+
+      const payload = (await response.json()) as {
+        choices?: Array<{
+          message?: {
+            content?: string;
+          };
+        }>;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          total_tokens?: number;
+        };
+      };
+
+      const content = payload.choices?.[0]?.message?.content;
+
+      rawOutput = content ?? JSON.stringify(payload);
+
+      if (!content) {
+        throw new Error("Grok web search response did not include message content.");
+      }
+
+      if (payload.usage) {
+        usage = normalizeUsage(payload.usage);
+        await input.reporter?.({
+          type: "usage",
+          scope: "search",
+          usage,
+        });
+      }
+
+      try {
+        parsedJson = JSON.parse(stripJsonFence(content));
+      } catch {
+        throw new Error("Grok web search returned invalid JSON.");
+      }
+
+      return webSearchResponseSchema.parse(parsedJson).results.slice(0, input.limit);
+    } catch (error) {
+      failureMessage = withLogDirectory(error instanceof Error ? error.message : String(error), log.directory);
+      throw new Error(failureMessage);
+    } finally {
+      await log.writeOutput({
+        status: failureMessage ? "error" : "success",
+        rawOutput,
+        parsedJson,
+        error: failureMessage,
+        metadata: usage ? { usage } : undefined,
+      });
+    }
   }
 }
 

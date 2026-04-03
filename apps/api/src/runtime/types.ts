@@ -10,9 +10,40 @@ export type SourceDocument = SearchHit & {
   content: string;
 };
 
+export type TokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+export type CollectionProgressEvent =
+  | {
+      type: "phase";
+      phase: "search" | "read" | "taxonomy" | "truths" | "classify" | "embed" | "persist";
+      status: "start" | "complete";
+      message: string;
+      count?: number;
+      provider?: SearchProviderKind;
+    }
+  | {
+      type: "model";
+      schemaName: string;
+      channel: "reasoning" | "content";
+      text: string;
+    }
+  | {
+      type: "usage";
+      scope: "search" | "ai";
+      schemaName?: string;
+      usage: TokenUsage;
+      totals?: TokenUsage;
+    };
+
+export type ProgressReporter = (event: CollectionProgressEvent) => void | Promise<void>;
+
 export type SearchProvider = {
   kind: SearchProviderKind;
-  search(input: { query: string; limit: number }): Promise<SearchHit[]>;
+  search(input: { query: string; limit: number; reporter?: ProgressReporter }): Promise<SearchHit[]>;
 };
 
 export type ChatJsonGateway = {
@@ -20,6 +51,7 @@ export type ChatJsonGateway = {
     schemaName: string;
     system: string;
     user: string;
+    reporter?: ProgressReporter;
   }): Promise<T>;
 };
 
@@ -32,9 +64,9 @@ export type SourceContentReader = {
 };
 
 export type TaxonomyPlanner = {
-  plan(input: { query: string; existingNodes: TaxonomyNode[] }): Promise<TaxonomyNode[]>;
+  plan(input: { query: string; existingNodes: TaxonomyNode[]; reporter?: ProgressReporter }): Promise<TaxonomyNode[]>;
 };
 
 export type TruthExtractor = {
-  extract(input: { query: string; documents: SourceDocument[] }): Promise<TruthDraft[]>;
+  extract(input: { query: string; documents: SourceDocument[]; reporter?: ProgressReporter }): Promise<TruthDraft[]>;
 };

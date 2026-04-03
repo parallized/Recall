@@ -38,6 +38,17 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
     CREATE TABLE IF NOT EXISTS learning_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, truth_id TEXT, mastery_delta REAL, happened_at TEXT);
   `);
 
+  db.exec(`
+    DELETE FROM taxonomy_nodes
+    WHERE id NOT IN (
+      SELECT level1_tag_id FROM truths
+      UNION
+      SELECT level2_tag_id FROM truths
+      UNION
+      SELECT level3_tag_id FROM truths
+    );
+  `);
+
   const readTruths = (): CollectedTruth[] =>
     db.query<CollectedTruth, []>(`SELECT id, statement, summary, evidence_quote AS evidenceQuote, confidence, source_url AS sourceUrl, level1_tag_id AS level1TagId, level2_tag_id AS level2TagId, level3_tag_id AS level3TagId FROM truths`).all();
 
@@ -76,8 +87,21 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
       
       const upsertTruth = db.query(`INSERT OR REPLACE INTO truths (id, statement, summary, evidence_quote, confidence, source_url, level1_tag_id, level2_tag_id, level3_tag_id, embedding_json, collection_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       res.truths.forEach(t => upsertTruth.run(t.id, t.statement, t.summary, t.evidenceQuote, t.confidence, t.sourceUrl, t.level1TagId, t.level2TagId, t.level3TagId, t.embedding ? JSON.stringify(t.embedding) : null, res.collectionId));
+
+      db.exec(`
+        DELETE FROM taxonomy_nodes
+        WHERE id NOT IN (
+          SELECT level1_tag_id FROM truths
+          UNION
+          SELECT level2_tag_id FROM truths
+          UNION
+          SELECT level3_tag_id FROM truths
+        );
+      `);
       
       return res;
     }
   };
 };
+
+export const createInMemoryPersistence = () => createSqlitePersistence(":memory:");

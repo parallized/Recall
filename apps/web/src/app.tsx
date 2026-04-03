@@ -24,6 +24,8 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const API_BASE_URL = "http://localhost:4174";
+
 type View = "dashboard" | "search" | "truths" | "graph" | "collect" | "settings";
 
 interface TagProgress {
@@ -31,6 +33,91 @@ interface TagProgress {
   progress: number;
   truthCount: number;
 }
+
+type TokenUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
+type CollectStreamEvent =
+  | {
+      type: "phase";
+      phase: "search" | "read" | "taxonomy" | "truths" | "classify" | "embed" | "persist";
+      status: "start" | "complete";
+      message: string;
+      count?: number;
+      provider?: "web-search-api" | "grok-search";
+    }
+  | {
+      type: "model";
+      schemaName: string;
+      channel: "reasoning" | "content";
+      text: string;
+    }
+  | {
+      type: "usage";
+      scope: "search" | "ai";
+      schemaName?: string;
+      usage: TokenUsage;
+      totals?: TokenUsage;
+    }
+  | {
+      type: "error";
+      message: string;
+    }
+  | {
+      type: "result";
+      result: {
+        collectionId: string;
+        truthCount: number;
+        sourceCount: number;
+        taxonomyCount: number;
+      };
+      usage: TokenUsage;
+    };
+
+type CollectLogEntry = {
+  id: string;
+  channel: "status" | "reasoning" | "content" | "error";
+  label: string;
+  text: string;
+};
+
+const emptyUsage = (): TokenUsage => ({
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+});
+
+const parseSseBuffer = (buffer: string) => {
+  const chunks = buffer.split(/\r?\n\r?\n/);
+  const remainder = chunks.pop() ?? "";
+
+  return {
+    remainder,
+    events: chunks
+      .map((chunk) =>
+        chunk
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trim())
+          .join("\n"),
+      )
+      .filter((chunk) => chunk.length > 0),
+  };
+};
+
+const readErrorResponse = async (response: Response) => {
+  const payload = await response.text();
+
+  try {
+    const parsed = JSON.parse(payload) as { message?: string };
+    return parsed.message ?? payload;
+  } catch {
+    return payload;
+  }
+};
 
 // --- Components ---
 
@@ -148,7 +235,7 @@ const SearchView = () => {
     if (!query) return;
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:4174/search/semantic?q=${encodeURIComponent(query)}`);
+      const response = await fetch(`${API_BASE_URL}/search/semantic?q=${encodeURIComponent(query)}`);
       const data = await response.json();
       setResults(data);
     } catch (e) {
@@ -216,12 +303,22 @@ export const App = () => {
   
   // Knowledge Collection State
   const [collectQuery, setCollectQuery] = useState("");
-  const [collectProvider, setCollectProvider] = useState<"web-search-api" | "grok-search">("web-search-api");
+  const [collectProvider, setCollectProvider] = useState<"web-search-api" | "grok-search">("grok-search");
   const [collecting, setCollecting] = useState(false);
+  const [collectPhase, setCollectPhase] = useState("等待启动");
+  const [collectUsage, setCollectUsage] = useState<TokenUsage>(emptyUsage);
+  const [collectLogs, setCollectLogs] = useState<CollectLogEntry[]>([]);
+  const [collectError, setCollectError] = useState<string | null>(null);
+  const [collectSummary, setCollectSummary] = useState<{
+    collectionId: string;
+    truthCount: number;
+    sourceCount: number;
+    taxonomyCount: number;
+  } | null>(null);
 
   const fetchProgress = async () => {
     try {
-      const response = await fetch("http://localhost:4174/tags/progress");
+      const response = await fetch(`${API_BASE_URL}/tags/progress`);
       const data = await response.json();
       if (Array.isArray(data)) {
         setProgress(data);
@@ -237,8 +334,52 @@ export const App = () => {
     if (!collectQuery.trim() || collecting) return;
     
     setCollecting(true);
+    setCollectError(null);
+    setCollectSummary(null);
+    setCollectUsage(emptyUsage());
+    setCollectPhase("准备建立采集流");
+    setCollectLogs([
+      {
+        id: crypto.randomUUID(),
+        channel: "status",
+        label: "COLLECT",
+        text: `准备采集：${collectQuery.trim()}`,
+      },
+    ]);
+
+    const pushLog = (channel: CollectLogEntry["channel"], label: string, text: string) => {
+      setCollectLogs((current) => {
+        if (text.length === 0) {
+          return current;
+        }
+
+        const last = current[current.length - 1];
+
+        if (last && last.channel === channel && last.label === label) {
+          return [
+            ...current.slice(0, -1),
+            {
+              ...last,
+              text: `${last.text}${text}`,
+            },
+          ];
+        }
+
+        return [
+          ...current,
+          {
+            id: crypto.randomUUID(),
+            channel,
+            label,
+            text,
+          },
+        ];
+      });
+    };
+
     try {
-      const response = await fetch("http://localhost:4174/knowledge/collect", {
+      let streamCompleted = false;
+      const response = await fetch(`${API_BASE_URL}/knowledge/collect/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -246,19 +387,85 @@ export const App = () => {
           provider: collectProvider,
         }),
       });
-      
-      if (response.ok) {
-        setCollectQuery("");
-        // Optionally switch view or show success
-        alert("知识采集成功！");
-        fetchProgress(); // Update dashboard
-      } else {
-        const error = await response.json();
-        alert(`采集失败: ${error.message || "未知错误"}`);
+
+      if (!response.ok) {
+        throw new Error(await readErrorResponse(response));
+      }
+
+      if (!response.body) {
+        throw new Error("服务器没有返回可读取的流式内容。");
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseSseBuffer(buffer);
+        buffer = parsed.remainder;
+
+        for (const rawEvent of parsed.events) {
+          const event = JSON.parse(rawEvent) as CollectStreamEvent;
+
+          if (event.type === "phase") {
+            setCollectPhase(event.message);
+            pushLog("status", `${event.phase.toUpperCase()} ${event.status.toUpperCase()}`, `${event.message}\n`);
+            continue;
+          }
+
+          if (event.type === "model") {
+            pushLog(event.channel, event.schemaName, event.text);
+            continue;
+          }
+
+          if (event.type === "usage") {
+            setCollectUsage(event.totals ?? event.usage);
+            pushLog(
+              "status",
+              `TOKENS ${event.schemaName ?? event.scope.toUpperCase()}`,
+              ` +${event.usage.totalTokens} tokens\n`,
+            );
+            continue;
+          }
+
+          if (event.type === "error") {
+            streamCompleted = true;
+            setCollectError(event.message);
+            setCollectPhase("采集中断");
+            pushLog("error", "ERROR", `${event.message}\n`);
+            continue;
+          }
+
+          streamCompleted = true;
+          setCollectSummary(event.result);
+          setCollectUsage(event.usage);
+          setCollectPhase("采集完成");
+          setCollectQuery("");
+          pushLog(
+            "status",
+            "RESULT",
+            `完成：${event.result.truthCount} truths / ${event.result.taxonomyCount} tags / ${event.result.sourceCount} sources\n`,
+          );
+          await fetchProgress();
+        }
+      }
+
+      if (!streamCompleted) {
+        throw new Error("采集流在返回最终结果之前就关闭了。");
       }
     } catch (e) {
       console.error(e);
-      alert("无法连接到服务器");
+      const message = e instanceof Error ? e.message : "无法连接到服务器";
+      setCollectError(message);
+      setCollectPhase("采集失败");
+      pushLog("error", "ERROR", `${message}\n`);
     } finally {
       setCollecting(false);
     }
@@ -309,7 +516,7 @@ export const App = () => {
                 <div className="max-w-xl mx-auto space-y-12 pt-12 animate-in fade-in slide-in-from-bottom-4 duration-700">
                    <div className="space-y-3">
                      <h1 className="text-3xl font-extrabold text-ink tracking-tight">知识采集</h1>
-                     <p className="text-ink/40 text-base">通过搜索引擎靶向采集关键信息。</p>
+                     <p className="text-ink/40 text-base">流式显示搜索、思考、抽取、分类和 token 进度，避免长时间无反馈。</p>
                    </div>
                     <div className="space-y-6">
                      <div className="space-y-2">
@@ -328,8 +535,8 @@ export const App = () => {
                          onChange={(e) => setCollectProvider(e.target.value as any)}
                          className="w-full bg-fog border border-line rounded-2xl px-6 py-4 focus:ring-4 focus:ring-accent/10 focus:bg-canvas outline-none transition-all appearance-none cursor-pointer font-medium"
                        >
-                          <option value="web-search-api">Web Search API (Default)</option>
                           <option value="grok-search">Grok Search Bridge</option>
+                          <option value="web-search-api">Web Search API</option>
                        </select>
                      </div>
                      <button 
@@ -342,8 +549,55 @@ export const App = () => {
                         ) : (
                           <PlusCircle className="w-5 h-5" />
                         )}
-                        <span>{collecting ? "正在捕获知识..." : "启动知识捕获"}</span>
+                        <span>{collecting ? "正在流式采集中..." : "启动知识捕获"}</span>
                      </button>
+
+                     <div className="grid grid-cols-3 gap-3">
+                       <StatCard label="Prompt Tokens" value={collectUsage.promptTokens} />
+                       <StatCard label="Output Tokens" value={collectUsage.completionTokens} />
+                       <StatCard label="Total Tokens" value={collectUsage.totalTokens} />
+                     </div>
+
+                     <Card title="当前阶段" className="space-y-3">
+                       <div className="text-lg font-bold text-ink">{collectPhase}</div>
+                       {collectSummary && (
+                         <div className="text-sm text-ink/50">
+                           collection {collectSummary.collectionId} · {collectSummary.truthCount} truths · {collectSummary.taxonomyCount} tags · {collectSummary.sourceCount} sources
+                         </div>
+                       )}
+                       {collectError && (
+                         <div className="text-sm font-medium text-rose-600 bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">
+                           {collectError}
+                         </div>
+                       )}
+                     </Card>
+
+                     <Card title="流式输出" className="space-y-4">
+                       <div className="max-h-[360px] overflow-y-auto rounded-2xl bg-canvas border border-line/70 p-4 space-y-3">
+                         {collectLogs.length === 0 ? (
+                           <div className="text-sm text-ink/30">还没有开始采集。</div>
+                         ) : (
+                           collectLogs.map((entry) => (
+                             <div key={entry.id} className="space-y-1">
+                               <div className="text-[10px] font-black uppercase tracking-[0.18em] text-ink/30">
+                                 {entry.label}
+                               </div>
+                               <pre
+                                 className={cn(
+                                   "whitespace-pre-wrap break-words text-sm leading-6 font-mono",
+                                   entry.channel === "reasoning" && "text-amber-700",
+                                   entry.channel === "content" && "text-emerald-700",
+                                   entry.channel === "error" && "text-rose-600",
+                                   entry.channel === "status" && "text-ink/60",
+                                 )}
+                               >
+                                 {entry.text}
+                               </pre>
+                             </div>
+                           ))
+                         )}
+                       </div>
+                     </Card>
                    </div>
                    <div className="h-32" />
                 </div>
