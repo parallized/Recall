@@ -1,0 +1,109 @@
+import type { SearchProviderKind, TruthDraft } from "@recall/domain";
+
+import type { SearchHit, SourceDocument, TokenUsage } from "./types";
+
+export type CaptureJobPhase = "idle" | "search" | "read" | "truths" | "taxonomy" | "classify" | "embed" | "persist";
+export type CaptureJobStatus = "queued_search" | "searching" | "ready_to_read" | "processing" | "completed" | "failed";
+export type CaptureSourceStatus = "pending_read" | "reading" | "pending_extract" | "extracting" | "completed" | "failed";
+export type CaptureJobEventChannel = "status" | "error";
+
+export type CaptureJob = {
+  id: string;
+  query: string;
+  provider: SearchProviderKind;
+  status: CaptureJobStatus;
+  phase: CaptureJobPhase;
+  searchLimit: number;
+  readConcurrency: number;
+  aiConcurrency: number;
+  discoveredSourceCount: number;
+  pendingReadCount: number;
+  readingCount: number;
+  pendingExtractCount: number;
+  extractingCount: number;
+  completedSourceCount: number;
+  failedSourceCount: number;
+  truthDraftCount: number;
+  truthCount: number;
+  taxonomyCount: number;
+  usage: TokenUsage;
+  collectionId: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+};
+
+export type CaptureSource = {
+  id: string;
+  jobId: string;
+  position: number;
+  url: string;
+  title: string;
+  snippet: string;
+  status: CaptureSourceStatus;
+  contentCached: boolean;
+  truthDraftCount: number;
+  fetchedAt: string | null;
+  extractedAt: string | null;
+  error: string | null;
+};
+
+export type CaptureJobEvent = {
+  id: number;
+  jobId: string;
+  createdAt: string;
+  channel: CaptureJobEventChannel;
+  label: string;
+  text: string;
+};
+
+export type CaptureJobDetail = {
+  job: CaptureJob;
+  sources: CaptureSource[];
+  events: CaptureJobEvent[];
+};
+
+export type SourceCacheEntry = {
+  url: string;
+  title: string;
+  snippet: string;
+  content: string | null;
+  fetchedAt: string | null;
+  error: string | null;
+};
+
+export type CreateCaptureJobInput = {
+  query: string;
+  provider: SearchProviderKind;
+  searchLimit: number;
+  readConcurrency: number;
+};
+
+export type StartCaptureProcessingInput = {
+  jobId: string;
+  readConcurrency: number;
+};
+
+export type QueuedDocument = {
+  source: CaptureSource;
+  document: SourceDocument;
+};
+
+export type StoredTruthDraft = TruthDraft & {
+  id: string;
+  jobId: string;
+};
+
+export const emptyTokenUsage = (): TokenUsage => ({
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+});
+
+export const toSourceDocument = (hit: SearchHit, cached: SourceCacheEntry): SourceDocument => ({
+  ...hit,
+  title: cached.title || hit.title,
+  content: cached.content ?? "",
+});

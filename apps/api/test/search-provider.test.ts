@@ -47,13 +47,12 @@ describe("search-provider", () => {
       expect(body.stream).toBe(false);
       expect(body.temperature).toBe(0);
       expect(body.response_format).toEqual({ type: "json_object" });
-      expect(body.messages).toHaveLength(2);
-      expect(body.messages[0].role).toBe("system");
+      expect(body.messages).toHaveLength(1);
+      expect(body.messages[0].role).toBe("user");
       expect(body.messages[0].content).toContain("Use live web search");
       expect(body.messages[0].content).toContain("Return only raw JSON");
-      expect(body.messages[1].role).toBe("user");
-      expect(body.messages[1].content).toContain("React concurrent rendering");
-      expect(body.messages[1].content).toContain("Return at most 2 results");
+      expect(body.messages[0].content).toContain("React concurrent rendering");
+      expect(body.messages[0].content).toContain("Return at most 2 results");
 
       return new Response(
         JSON.stringify({
@@ -173,5 +172,45 @@ describe("search-provider", () => {
 
     expect(outputFile).toContain("Here are some useful links");
     expect(outputFile).toContain("Grok web search returned invalid JSON.");
+  });
+
+  test("grok-search extracts JSON from wrapped model output", async () => {
+    globalThis.fetch = mock(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  'Sure, here is the object: {"results":[{"title":"React docs","url":"https://react.dev","snippet":"Official React documentation."}]}',
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    ) as unknown as typeof fetch;
+
+    const provider = new GrokWebSearchProvider({
+      baseUrl: "https://ai.huan666.de/v1",
+      apiKey: "test-key",
+      model: "grok-4.20-beta",
+    });
+
+    await expect(
+      provider.search({
+        query: "React docs",
+        limit: 1,
+      }),
+    ).resolves.toEqual([
+      {
+        title: "React docs",
+        url: "https://react.dev",
+        snippet: "Official React documentation.",
+      },
+    ]);
   });
 });

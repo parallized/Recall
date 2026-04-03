@@ -338,6 +338,77 @@ describe("api", () => {
     ]);
   });
 
+  test("keeps running cleanly after the stream client disconnects", async () => {
+    let completed = false;
+    const pipeline: CollectionPipeline = {
+      collect: async (input) => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await input.reporter?.({
+          type: "phase",
+          phase: "search",
+          status: "start",
+          message: "Starting grok search.",
+          provider: "grok-search",
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        completed = true;
+
+        return {
+          collectionId: "collection-stream-disconnect",
+          query: input.query,
+          provider: input.provider,
+          truthCount: 1,
+          sourceCount: 1,
+          taxonomy: [
+            {
+              id: "react",
+              parentId: null,
+              level: 1,
+              name: "React",
+              description: "React learning map.",
+            },
+          ],
+          truths: [
+            {
+              id: "truth-stream-disconnect-1",
+              statement: "React batches state updates within the same event.",
+              summary: "Batched state updates share the same event loop turn.",
+              evidenceQuote: "React batches updates within the same event.",
+              confidence: 0.9,
+              sourceUrl: "https://react.dev",
+              level1TagId: "react",
+              level2TagId: "react",
+              level3TagId: "react",
+            },
+          ],
+        };
+      },
+    };
+
+    const app = createApp({
+      pipeline,
+      persistence,
+    });
+
+    const response = await app.handle(
+      new Request("http://localhost/knowledge/collect/stream", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "React batching",
+          provider: "grok-search",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+
+    await response.body?.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(completed).toBe(true);
+  });
+
   test("prunes orphan taxonomy left by older builds on restart", () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), "recall-api-"));
     const databasePath = join(tempDirectory, "recall.sqlite");

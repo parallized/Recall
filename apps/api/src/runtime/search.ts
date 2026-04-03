@@ -21,6 +21,18 @@ const stripJsonFence = (content: string) =>
     .replace(/\s*```$/, "")
     .trim();
 
+const extractJsonCandidate = (content: string) => {
+  const cleaned = stripJsonFence(content).trim();
+  const start = cleaned.search(/[{\[]/);
+  const end = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
+
+  if (start === -1 || end === -1 || end < start) {
+    return cleaned;
+  }
+
+  return cleaned.slice(start, end + 1);
+};
+
 const normalizeBaseUrl = (value: string) => value.replace(/\/+$/, "");
 const normalizeUsage = (usage?: {
   prompt_tokens?: number;
@@ -32,22 +44,18 @@ const normalizeUsage = (usage?: {
   totalTokens: usage?.total_tokens ?? 0,
 });
 
-const grokSearchSystemPrompt = [
-  "You are a live web search engine running inside a knowledge ingestion pipeline.",
-  "Use live web search to find current, relevant public pages for the user's query before answering.",
-  'Return only raw JSON with the shape {"results":[{"title":"","url":"","snippet":""}]}.',
-  "Do not return markdown, prose, analysis, citations, bullet lists, or code fences.",
-  "Every result must contain a direct canonical page URL and a concise grounded snippet.",
-  "If there are fewer strong matches than requested, return fewer results instead of fabricating any entry.",
-].join(" ");
-
 const buildGrokSearchUserPrompt = (input: { query: string; limit: number }) =>
   [
+    "Use live web search to find current, relevant public pages for the query below before answering.",
+    'Return only raw JSON with the shape {"results":[{"title":"","url":"","snippet":""}]}.',
+    "Do not return markdown, prose, analysis, citations, bullet lists, or code fences.",
+    "Every result must contain a direct canonical page URL and a concise grounded snippet.",
+    "If there are fewer strong matches than requested, return fewer results instead of fabricating any entry.",
+    "",
     `Query: ${input.query}`,
     `Return at most ${input.limit} results.`,
-    "Search the live web now.",
     "Prefer primary sources, official documentation, or direct publisher pages when available.",
-    "Return the JSON object immediately.",
+    "Search the live web now and return the JSON object immediately.",
   ].join("\n");
 
 export class DirectWebSearchApiProvider implements SearchProvider {
@@ -102,10 +110,6 @@ export class GrokWebSearchProvider implements SearchProvider {
         type: "json_object",
       },
       messages: [
-        {
-          role: "system",
-          content: grokSearchSystemPrompt,
-        },
         {
           role: "user",
           content: buildGrokSearchUserPrompt(input),
@@ -176,7 +180,7 @@ export class GrokWebSearchProvider implements SearchProvider {
       }
 
       try {
-        parsedJson = JSON.parse(stripJsonFence(content));
+        parsedJson = JSON.parse(extractJsonCandidate(content));
       } catch {
         throw new Error("Grok web search returned invalid JSON.");
       }

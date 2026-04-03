@@ -6,6 +6,8 @@ export type RuntimeConfig = {
   grokBaseUrl?: string;
   grokApiKey?: string;
   grokModel?: string;
+  jinaReaderBaseUrl?: string;
+  jinaReaderApiKey?: string;
   webSearchApiUrl?: string;
   webSearchApiKey?: string;
   databasePath: string;
@@ -35,6 +37,8 @@ export const loadRuntimeConfig = (): RuntimeConfig => ({
   grokBaseUrl: readOptionalEnv("GROK_BASE_URL") ?? readOptionalEnv("AI_BASE_URL") ?? "https://ai.huan666.de/v1",
   grokApiKey: readOptionalEnv("GROK_API_KEY") ?? readOptionalEnv("AI_API_KEY"),
   grokModel: readOptionalEnv("GROK_MODEL") ?? "grok-4.20-beta",
+  jinaReaderBaseUrl: readOptionalEnv("JINA_READER_BASE_URL") ?? "https://r.jina.ai/http://",
+  jinaReaderApiKey: readOptionalEnv("JINA_READER_API_KEY"),
   webSearchApiUrl: readOptionalEnv("WEB_SEARCH_API_URL"),
   webSearchApiKey: readOptionalEnv("WEB_SEARCH_API_KEY"),
   databasePath: Bun.env.DB_PATH ?? "./data/recall.sqlite",

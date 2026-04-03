@@ -153,4 +153,38 @@ describe("chat-gateway", () => {
     expect(outputFile).toContain("not json");
     expect(outputFile).toContain("Chat completion returned invalid JSON.");
   });
+
+  test("surfaces SSE error payloads from the upstream provider", async () => {
+    console.log = mock(() => {});
+    const logsRoot = await mkdtemp(join(tmpdir(), "recall-chat-gateway-"));
+    temporaryDirectories.push(logsRoot);
+
+    globalThis.fetch = mock(async () =>
+      streamResponse([
+        'data: {"error":{"message":"AppChatReverse: Chat failed, 403","type":"server_error","code":"upstream_error"}}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    ) as unknown as typeof fetch;
+
+    const gateway = new OpenAiCompatibleJsonGateway({
+      baseUrl: "https://ai.huan666.de/v1",
+      apiKey: "test-key",
+      model: "grok-4.20-beta",
+      logsRoot,
+    });
+
+    await expect(
+      gateway.generateJson({
+        schemaName: "truth_list",
+        system: "Return JSON.",
+        user: "Return JSON.",
+      }),
+    ).rejects.toThrow(/Chat completion stream returned error: AppChatReverse: Chat failed, 403/);
+
+    const [logDirectory] = await readdir(logsRoot);
+    const outputFile = await readFile(join(logsRoot, logDirectory, "output.txt"), "utf8");
+
+    expect(outputFile).toContain("AppChatReverse: Chat failed, 403");
+    expect(outputFile).toContain('"status": "error"');
+  });
 });

@@ -223,12 +223,26 @@ export class OpenAiCompatibleJsonGateway implements ChatJsonGateway {
                 reasoning_content?: string;
               };
             }>;
+            error?: {
+              message?: string;
+              type?: string;
+              code?: string;
+            };
             usage?: {
               prompt_tokens?: number;
               completion_tokens?: number;
               total_tokens?: number;
             };
           };
+
+          if (payload.error) {
+            rawOutput = rawOutput.length > 0 ? `${rawOutput}\n${event}` : event;
+            throw new Error(
+              payload.error.message
+                ? `Chat completion stream returned error: ${payload.error.message}`
+                : "Chat completion stream returned an unknown error.",
+            );
+          }
 
           if (payload.usage) {
             usage = normalizeUsage(payload.usage);

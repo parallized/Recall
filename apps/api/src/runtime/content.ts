@@ -3,6 +3,17 @@ import { DOMParser } from "linkedom";
 
 import type { SearchHit, SourceContentReader, SourceDocument } from "./types";
 
+const normalizeTextContent = (content: string) => content.replace(/\s+/g, " ").trim();
+
+const buildJinaReaderUrl = (baseUrl: string, sourceUrl: string) => {
+  if (baseUrl.includes("{url}")) {
+    return baseUrl.replace("{url}", encodeURIComponent(sourceUrl));
+  }
+
+  const normalizedBaseUrl = baseUrl.endsWith("/") ? baseUrl : baseUrl;
+  return `${normalizedBaseUrl}${sourceUrl.replace(/^https?:\/\//, "")}`;
+};
+
 export class HtmlSourceContentReader implements SourceContentReader {
   async read(hit: SearchHit): Promise<SourceDocument> {
     const response = await fetch(hit.url, {
@@ -27,7 +38,42 @@ export class HtmlSourceContentReader implements SourceContentReader {
     return {
       ...hit,
       title: article.title || hit.title,
-      content: article.textContent.replace(/\s+/g, " ").trim(),
+      content: normalizeTextContent(article.textContent),
+    };
+  }
+}
+
+export class JinaReaderSourceContentReader implements SourceContentReader {
+  constructor(
+    private readonly options: {
+      baseUrl: string;
+      apiKey?: string;
+    } = {
+      baseUrl: "https://r.jina.ai/http://",
+    },
+  ) {}
+
+  async read(hit: SearchHit): Promise<SourceDocument> {
+    const response = await fetch(buildJinaReaderUrl(this.options.baseUrl, hit.url), {
+      headers: {
+        Accept: "text/plain",
+        ...(this.options.apiKey ? { Authorization: `Bearer ${this.options.apiKey}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Jina reader failed for ${hit.url} with status ${response.status}.`);
+    }
+
+    const content = normalizeTextContent(await response.text());
+
+    if (content.length === 0) {
+      throw new Error(`Jina reader returned empty content for ${hit.url}.`);
+    }
+
+    return {
+      ...hit,
+      content,
     };
   }
 }
