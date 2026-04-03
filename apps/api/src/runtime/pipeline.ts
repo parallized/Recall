@@ -9,6 +9,7 @@ import {
 } from "@recall/domain";
 
 import { cosineSimilarity } from "./embedder";
+import { buildStudySearchQuery } from "./search";
 import type {
   ChatJsonGateway,
   EmbeddingService,
@@ -39,6 +40,10 @@ type ExtractedTruthPayload = {
   truths: Array<{
     statement: string;
     summary: string;
+    questionType?: "multiple_choice" | "open_ended";
+    options?: string[];
+    answer?: string;
+    explanation?: string;
     evidenceQuote: string;
     confidence: number;
   }>;
@@ -67,6 +72,16 @@ const toNodeId = (parentId: string | null, name: string) => {
 };
 
 const nodeDescriptor = (node: TaxonomyNode) => `${node.name}\n${node.description}`;
+const truthDescriptor = (truth: Pick<TruthDraft, "statement" | "summary" | "answer" | "explanation" | "options">) =>
+  [
+    truth.statement,
+    truth.summary,
+    truth.answer ?? "",
+    truth.explanation ?? "",
+    truth.options?.join("\n") ?? "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
 const chunkDocuments = (documents: SourceDocument[]) =>
   documents.map((document) => ({
@@ -100,8 +115,8 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
     const payload = await this.gateway.generateJson<TaxonomyBlueprint>({
       schemaName: "taxonomy_blueprint",
       system: [
-        "You design three-level learning taxonomies for atomic truth extraction systems.",
-        "Return a taxonomy focused on learning progression rather than encyclopedic breadth.",
+        "You design three-level learning taxonomies for question-bank memorization systems.",
+        "Return a taxonomy focused on interview-style recall and learning progression rather than encyclopedic breadth.",
         "The output must contain exactly one level1 node, 4-6 level2 nodes, and 3-5 level3 nodes per level2 node.",
       ].join("\n"),
       user: [
@@ -161,9 +176,16 @@ export class AiTruthExtractor implements TruthExtractor {
       const payload = await this.gateway.generateJson<ExtractedTruthPayload>({
         schemaName: "truth_list",
         system: [
-          "You extract atomic truths from source material for deliberate learning systems.",
-          "Each truth must be a standalone factual claim that can be reviewed, tagged, and recommended.",
-          "Only keep claims directly grounded in the supplied source text.",
+          "You convert source material into interview-style study questions for deliberate memorization systems.",
+          "Each item must be a standalone question-answer card that helps a learner practice recall.",
+          "Prefer question-bank style prompts when the source already contains questions; otherwise synthesize high-quality questions from the source.",
+          "Every card must stay directly grounded in the supplied source text.",
+          "statement = the question stem shown to the learner.",
+          "summary = a short standard answer for quick review.",
+          "questionType must be either multiple_choice or open_ended.",
+          "For multiple_choice, provide 3-5 plausible options and set answer to the exact correct option text.",
+          "For open_ended, omit options and set answer to the canonical answer.",
+          "explanation should explain why the answer is correct or what key points must be recalled.",
           "Confidence must be between 0 and 1.",
         ].join("\n"),
         user: [
@@ -171,8 +193,10 @@ export class AiTruthExtractor implements TruthExtractor {
           `Source title: ${document.title}`,
           `Source URL: ${document.url}`,
           `Source snippet: ${document.snippet}`,
-          "Return JSON with the shape {\"truths\":[{\"statement\":\"\",\"summary\":\"\",\"evidenceQuote\":\"\",\"confidence\":0.0}]}",
-          "Extract 4 to 8 high-value truths. Quotes must be copied from the source text exactly as evidence.",
+          "Return JSON with the shape {\"truths\":[{\"statement\":\"\",\"summary\":\"\",\"questionType\":\"open_ended\",\"options\":[],\"answer\":\"\",\"explanation\":\"\",\"evidenceQuote\":\"\",\"confidence\":0.0}]}",
+          "Extract 4 to 8 high-value study questions. Questions should resemble computer interview prep, quiz practice, or deliberate recall prompts.",
+          "If the source is not already a question bank, derive questions from the densest, most testable concepts in the source.",
+          "Quotes must be copied from the source text exactly as evidence.",
           `Source text:\n${document.content}`,
         ].join("\n\n"),
         reporter: input.reporter,
@@ -183,6 +207,10 @@ export class AiTruthExtractor implements TruthExtractor {
           sourceId: document.url,
           statement: truth.statement,
           summary: truth.summary,
+          questionType: truth.questionType,
+          options: truth.options,
+          answer: truth.answer,
+          explanation: truth.explanation,
           evidenceQuote: truth.evidenceQuote,
           confidence: truth.confidence,
         });
@@ -254,7 +282,7 @@ export class HybridHierarchicalTagClassifier {
       texts: input.taxonomy.map(nodeDescriptor),
     });
     const truthEmbeddings = await this.options.embedder.embed({
-      texts: input.truths.map((truth) => `${truth.statement}\n${truth.summary}`),
+      texts: input.truths.map(truthDescriptor),
     });
 
     const classifications: Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">> = [];
@@ -270,13 +298,15 @@ export class HybridHierarchicalTagClassifier {
       const reranked = await this.options.gateway.generateJson<RerankedPath>({
         schemaName: "reranked_tag_path",
         system: [
-          "You rerank candidate taxonomy paths for atomic truths.",
+          "You rerank candidate taxonomy paths for question-answer study cards.",
           "Choose exactly one path from the supplied candidates.",
-          "The chosen path must be semantically precise and educationally actionable.",
+          "The chosen path must be semantically precise and useful for memorizing interview-style questions.",
         ].join("\n"),
         user: [
-          `Truth statement: ${truth.statement}`,
-          `Truth summary: ${truth.summary}`,
+          `Question stem: ${truth.statement}`,
+          `Short answer: ${truth.summary}`,
+          `Canonical answer: ${truth.answer ?? truth.summary}`,
+          `Explanation: ${truth.explanation ?? ""}`,
           `Evidence: ${truth.evidenceQuote}`,
           "Return JSON with keys level1Id, level2Id, level3Id, reason.",
           `Candidate paths:\n${topPaths
@@ -344,7 +374,7 @@ export class KnowledgeCollectionOrchestrator {
     });
 
     const searchHits = await provider.search({
-      query: input.query,
+      query: provider.kind === "web-search-api" ? buildStudySearchQuery(input.query) : input.query,
       limit: 5,
       reporter: input.reporter,
     });
@@ -408,7 +438,7 @@ export class KnowledgeCollectionOrchestrator {
       type: "phase",
       phase: "truths",
       status: "start",
-      message: "Extracting atomic truths from source documents.",
+      message: "Extracting interview-style study questions from source documents.",
     });
     const truthDrafts = deduplicateTruths(
       await this.options.truthExtractor.extract({
@@ -421,19 +451,19 @@ export class KnowledgeCollectionOrchestrator {
       type: "phase",
       phase: "truths",
       status: "complete",
-      message: `Extracted ${truthDrafts.length} truth drafts.`,
+      message: `Extracted ${truthDrafts.length} question-answer drafts.`,
       count: truthDrafts.length,
     });
 
     if (truthDrafts.length === 0) {
-      throw new Error("Truth extraction returned zero atomic truths.");
+      throw new Error("Question extraction returned zero study cards.");
     }
 
     await input.reporter?.({
       type: "phase",
       phase: "classify",
       status: "start",
-      message: "Binding each truth to one taxonomy path.",
+      message: "Binding each study question to one taxonomy path.",
     });
     const tagAssignments = await this.options.tagClassifier.classify({
       truths: truthDrafts,
@@ -444,7 +474,7 @@ export class KnowledgeCollectionOrchestrator {
       type: "phase",
       phase: "classify",
       status: "complete",
-      message: `Classified ${tagAssignments.length} truth assignments.`,
+      message: `Classified ${tagAssignments.length} question assignments.`,
       count: tagAssignments.length,
     });
 
@@ -452,16 +482,16 @@ export class KnowledgeCollectionOrchestrator {
       type: "phase",
       phase: "embed",
       status: "start",
-      message: "Embedding truths for semantic search and recall.",
+      message: "Embedding study questions for semantic search and recall.",
     });
     const embeddings = await this.options.embedder.embed({
-      texts: truthDrafts.map((truth) => `${truth.statement}\n${truth.summary}`),
+      texts: truthDrafts.map(truthDescriptor),
     });
     await input.reporter?.({
       type: "phase",
       phase: "embed",
       status: "complete",
-      message: `Embedded ${embeddings.length} truths.`,
+      message: `Embedded ${embeddings.length} study questions.`,
       count: embeddings.length,
     });
 
@@ -469,6 +499,10 @@ export class KnowledgeCollectionOrchestrator {
       id: crypto.randomUUID(),
       statement: truth.statement,
       summary: truth.summary,
+      questionType: truth.questionType,
+      options: truth.options,
+      answer: truth.answer,
+      explanation: truth.explanation,
       evidenceQuote: truth.evidenceQuote,
       confidence: truth.confidence,
       sourceUrl: truth.sourceId,

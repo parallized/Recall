@@ -19,6 +19,7 @@ import type {
   TruthExtractor,
 } from "./types";
 import type { HybridHierarchicalTagClassifier } from "./pipeline";
+import { buildStudySearchQuery } from "./search";
 
 type CaptureJobServiceDependencies = {
   repository: CaptureJobRepository;
@@ -80,6 +81,26 @@ class AsyncQueue<T> {
   }
 }
 
+class AsyncMutex {
+  private tail = Promise.resolve();
+
+  async runExclusive<T>(operation: () => Promise<T>) {
+    const previous = this.tail.catch(() => undefined);
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+}
+
 const mergeTaxonomy = (existingNodes: TaxonomyNode[], plannedNodes: TaxonomyNode[]) => {
   const mergedById = new Map<string, TaxonomyNode>();
 
@@ -115,6 +136,16 @@ const dedupeHits = (hits: Awaited<ReturnType<SearchProvider["search"]>>) => {
 };
 
 const toErrorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const describeStudyCard = (truth: Pick<TruthDraft, "statement" | "summary" | "answer" | "explanation" | "options">) =>
+  [
+    truth.statement,
+    truth.summary,
+    truth.answer ?? "",
+    truth.explanation ?? "",
+    truth.options?.join("\n") ?? "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
 const runWithConcurrency = async <T>(
   items: T[],
@@ -150,6 +181,7 @@ export interface CaptureJobService {
 
 export class PersistentCaptureJobService implements CaptureJobService {
   private readonly runningJobs = new Map<string, Promise<void>>();
+  private readonly extractionMutex = new AsyncMutex();
 
   constructor(private readonly options: CaptureJobServiceDependencies) {}
 
@@ -194,7 +226,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     this.options.repository.appendEvent(job.id, {
       channel: "status",
       label: "PROCESS",
-      text: `Queued reading with concurrency ${input.readConcurrency}. AI extraction remains single-threaded.`,
+      text: `Queued reading with concurrency ${input.readConcurrency}. Source-to-question extraction uses one shared AI lane.`,
     });
     this.runInBackground(job.id, () => this.runProcessing(job.id));
 
@@ -296,7 +328,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       const provider = this.resolveProvider(job.provider);
       const searchHits = dedupeHits(
         await provider.search({
-          query: job.query,
+          query: provider.kind === "web-search-api" ? buildStudySearchQuery(job.query) : job.query,
           limit: job.searchLimit,
           reporter: this.buildUsageReporter(jobId),
         }),
@@ -350,7 +382,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       this.appendStatus(
         jobId,
         "READ",
-        `Reading cached sources with concurrency ${currentJob.readConcurrency} and a single AI extraction lane.`,
+        `Reading cached sources with concurrency ${currentJob.readConcurrency}. Source-to-question extraction runs through one shared AI lane.`,
       );
 
       await this.resumeInterruptedSources(jobId);
@@ -511,36 +543,40 @@ export class PersistentCaptureJobService implements CaptureJobService {
         break;
       }
 
-      const source = this.options.repository.updateSource(item.source.id, {
-        status: "extracting",
-        error: null,
-      });
-      this.appendStatus(jobId, "FACT", `Extracting facts from ${source.title}.`);
+      this.appendStatus(jobId, "QUESTION", `${item.source.title}: waiting for the shared AI extraction lane.`);
 
-      try {
-        const drafts = await this.options.truthExtractor.extract({
-          query: this.requireJob(jobId).query,
-          documents: [item.document],
-          reporter,
-        });
-
-        this.options.repository.replaceSourceTruthDrafts(jobId, source.url, drafts);
-        this.options.repository.updateSource(source.id, {
-          status: "completed",
-          truthDraftCount: drafts.length,
-          extractedAt: new Date().toISOString(),
+      await this.extractionMutex.runExclusive(async () => {
+        const source = this.options.repository.updateSource(item.source.id, {
+          status: "extracting",
           error: null,
         });
-        this.appendStatus(jobId, "FACT", `${source.title}: extracted ${drafts.length} fact drafts.`);
-      } catch (error) {
-        const message = toErrorMessage(error);
-        this.options.repository.updateSource(source.id, {
-          status: "failed",
-          truthDraftCount: 0,
-          error: message,
-        });
-        this.appendError(jobId, "FACT", `${source.title}: ${message}`);
-      }
+        this.appendStatus(jobId, "QUESTION", `Extracting study questions from ${source.title}.`);
+
+        try {
+          const drafts = await this.options.truthExtractor.extract({
+            query: this.requireJob(jobId).query,
+            documents: [item.document],
+            reporter,
+          });
+
+          this.options.repository.replaceSourceTruthDrafts(jobId, source.url, drafts);
+          this.options.repository.updateSource(source.id, {
+            status: "completed",
+            truthDraftCount: drafts.length,
+            extractedAt: new Date().toISOString(),
+            error: null,
+          });
+          this.appendStatus(jobId, "QUESTION", `${source.title}: extracted ${drafts.length} study-question drafts.`);
+        } catch (error) {
+          const message = toErrorMessage(error);
+          this.options.repository.updateSource(source.id, {
+            status: "failed",
+            truthDraftCount: 0,
+            error: message,
+          });
+          this.appendError(jobId, "QUESTION", `${source.title}: ${message}`);
+        }
+      });
     }
   }
 
@@ -551,19 +587,23 @@ export class PersistentCaptureJobService implements CaptureJobService {
         sourceId: draft.sourceId,
         statement: draft.statement,
         summary: draft.summary,
+        questionType: draft.questionType,
+        options: draft.options,
+        answer: draft.answer,
+        explanation: draft.explanation,
         evidenceQuote: draft.evidenceQuote,
         confidence: draft.confidence,
       })),
     );
 
     if (drafts.length === 0) {
-      throw new Error("No fact drafts were extracted from cached sources.");
+      throw new Error("No study-question drafts were extracted from cached sources.");
     }
 
     this.options.repository.updateJob(jobId, {
       phase: "taxonomy",
     });
-    this.appendStatus(jobId, "TAXONOMY", "Planning taxonomy from extracted facts.");
+    this.appendStatus(jobId, "TAXONOMY", "Planning taxonomy from extracted study questions.");
 
     const existingTaxonomy = this.options.knowledgeStore.getTaxonomy();
     const plannedTaxonomy = await this.options.taxonomyPlanner.plan({
@@ -576,7 +616,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     this.options.repository.updateJob(jobId, {
       phase: "classify",
     });
-    this.appendStatus(jobId, "CLASSIFY", `Classifying ${drafts.length} facts into taxonomy paths.`);
+    this.appendStatus(jobId, "CLASSIFY", `Classifying ${drafts.length} study questions into taxonomy paths.`);
     const tagAssignments = await this.options.tagClassifier.classify({
       truths: drafts,
       taxonomy,
@@ -586,20 +626,24 @@ export class PersistentCaptureJobService implements CaptureJobService {
     this.options.repository.updateJob(jobId, {
       phase: "embed",
     });
-    this.appendStatus(jobId, "EMBED", `Embedding ${drafts.length} facts for semantic search.`);
+    this.appendStatus(jobId, "EMBED", `Embedding ${drafts.length} study questions for semantic search.`);
     const embeddings = await this.options.embedder.embed({
-      texts: drafts.map((truth) => `${truth.statement}\n${truth.summary}`),
+      texts: drafts.map(describeStudyCard),
     });
 
     this.options.repository.updateJob(jobId, {
       phase: "persist",
     });
-    this.appendStatus(jobId, "PERSIST", "Saving facts into the knowledge store.");
+    this.appendStatus(jobId, "PERSIST", "Saving study questions into the knowledge store.");
 
     const truths: CollectedTruth[] = drafts.map((truth, index) => ({
       id: crypto.randomUUID(),
       statement: truth.statement,
       summary: truth.summary,
+      questionType: truth.questionType,
+      options: truth.options,
+      answer: truth.answer,
+      explanation: truth.explanation,
       evidenceQuote: truth.evidenceQuote,
       confidence: truth.confidence,
       sourceUrl: truth.sourceId,
@@ -631,7 +675,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     this.appendStatus(
       jobId,
       "DONE",
-      `Saved ${saved.truthCount} facts from ${saved.sourceCount} sources into collection ${saved.collectionId}.`,
+      `Saved ${saved.truthCount} study questions from ${saved.sourceCount} sources into collection ${saved.collectionId}.`,
     );
   }
 

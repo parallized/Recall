@@ -12,10 +12,17 @@ export const taxonomyNodeSchema = z.object({
 });
 export type TaxonomyNode = z.infer<typeof taxonomyNodeSchema>;
 
+export const truthQuestionTypeSchema = z.enum(["multiple_choice", "open_ended"]);
+export type TruthQuestionType = z.infer<typeof truthQuestionTypeSchema>;
+
 export const truthDraftSchema = z.object({
   sourceId: z.string(),
   statement: z.string(),
   summary: z.string(),
+  questionType: truthQuestionTypeSchema.optional(),
+  options: z.array(z.string()).max(6).optional(),
+  answer: z.string().optional(),
+  explanation: z.string().optional(),
   evidenceQuote: z.string(),
   confidence: z.number().min(0).max(1),
 });
@@ -67,6 +74,10 @@ export const collectedTruthSchema = z.object({
   id: z.string(),
   statement: z.string(),
   summary: z.string(),
+  questionType: truthQuestionTypeSchema.optional(),
+  options: z.array(z.string()).max(6).optional(),
+  answer: z.string().optional(),
+  explanation: z.string().optional(),
   evidenceQuote: z.string(),
   confidence: z.number().min(0).max(1),
   sourceUrl: z.string().url(),

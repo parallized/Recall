@@ -29,6 +29,16 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
   }
 
   const db = new Database(databasePath, { create: true });
+  const ensureColumn = (table: string, column: string, definition: string) => {
+    const columns = db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((entry) => entry.name);
+
+    if (!columns.includes(column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  };
   
   // Clean initialization
   db.exec(`
@@ -37,6 +47,10 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
     CREATE TABLE IF NOT EXISTS truths (id TEXT PRIMARY KEY, statement TEXT, summary TEXT, evidence_quote TEXT, confidence REAL, source_url TEXT, level1_tag_id TEXT, level2_tag_id TEXT, level3_tag_id TEXT, embedding_json TEXT, collection_id TEXT);
     CREATE TABLE IF NOT EXISTS learning_signals (id INTEGER PRIMARY KEY AUTOINCREMENT, truth_id TEXT, mastery_delta REAL, happened_at TEXT);
   `);
+  ensureColumn("truths", "question_type", "TEXT");
+  ensureColumn("truths", "options_json", "TEXT");
+  ensureColumn("truths", "answer", "TEXT");
+  ensureColumn("truths", "explanation", "TEXT");
 
   db.exec(`
     DELETE FROM taxonomy_nodes
@@ -50,7 +64,18 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
   `);
 
   const readTruths = (): CollectedTruth[] =>
-    db.query<CollectedTruth, []>(`SELECT id, statement, summary, evidence_quote AS evidenceQuote, confidence, source_url AS sourceUrl, level1_tag_id AS level1TagId, level2_tag_id AS level2TagId, level3_tag_id AS level3TagId FROM truths`).all();
+    db
+      .query<
+        CollectedTruth & { optionsJson?: string | null },
+        []
+      >(
+        `SELECT id, statement, summary, question_type AS questionType, options_json AS optionsJson, answer, explanation, evidence_quote AS evidenceQuote, confidence, source_url AS sourceUrl, level1_tag_id AS level1TagId, level2_tag_id AS level2TagId, level3_tag_id AS level3TagId FROM truths`,
+      )
+      .all()
+      .map(({ optionsJson, ...truth }) => ({
+        ...truth,
+        options: optionsJson ? JSON.parse(optionsJson) : undefined,
+      }));
 
   const readTaxonomy = (): TaxonomyNode[] =>
     db.query<TaxonomyNode, []>(`SELECT id, parent_id AS parentId, level, name, description FROM taxonomy_nodes`).all();
@@ -71,7 +96,13 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
       signals: readSignals(), 
       now 
     }),
-    listTruthVectors: () => db.query<{id:string, statement:string, level3TagId:string, embeddingJson:string},[]>(`SELECT id, statement, level3_tag_id AS level3TagId, embedding_json AS embeddingJson FROM truths WHERE embedding_json IS NOT NULL`).all().map(t => ({...t, embedding: JSON.parse(t.embeddingJson)})),
+    listTruthVectors: () =>
+      db
+        .query<{id:string, statement:string, level3TagId:string, embeddingJson:string},[]>(
+          `SELECT id, statement, level3_tag_id AS level3TagId, embedding_json AS embeddingJson FROM truths WHERE embedding_json IS NOT NULL`,
+        )
+        .all()
+        .map((t) => ({ ...t, embedding: JSON.parse(t.embeddingJson) })),
     getTaxonomy: readTaxonomy,
     recordSignal: (s) => db.query(`INSERT INTO learning_signals (truth_id, mastery_delta, happened_at) VALUES (?, ?, ?)`).run(s.truthId, s.masteryDelta, s.happenedAt),
     upsertTaxonomy: (nodes) => {
@@ -85,8 +116,31 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
       
       db.query(`INSERT OR REPLACE INTO collections (id, query, provider, truth_count, source_count) VALUES (?, ?, ?, ?, ?)`).run(res.collectionId, res.query, res.provider, res.truthCount, res.sourceCount);
       
-      const upsertTruth = db.query(`INSERT OR REPLACE INTO truths (id, statement, summary, evidence_quote, confidence, source_url, level1_tag_id, level2_tag_id, level3_tag_id, embedding_json, collection_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-      res.truths.forEach(t => upsertTruth.run(t.id, t.statement, t.summary, t.evidenceQuote, t.confidence, t.sourceUrl, t.level1TagId, t.level2TagId, t.level3TagId, t.embedding ? JSON.stringify(t.embedding) : null, res.collectionId));
+      const upsertTruth = db.query(`
+        INSERT OR REPLACE INTO truths (
+          id, statement, summary, question_type, options_json, answer, explanation, evidence_quote, confidence,
+          source_url, level1_tag_id, level2_tag_id, level3_tag_id, embedding_json, collection_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      res.truths.forEach(t =>
+        upsertTruth.run(
+          t.id,
+          t.statement,
+          t.summary,
+          t.questionType ?? null,
+          t.options ? JSON.stringify(t.options) : null,
+          t.answer ?? null,
+          t.explanation ?? null,
+          t.evidenceQuote,
+          t.confidence,
+          t.sourceUrl,
+          t.level1TagId,
+          t.level2TagId,
+          t.level3TagId,
+          t.embedding ? JSON.stringify(t.embedding) : null,
+          res.collectionId,
+        ),
+      );
 
       db.exec(`
         DELETE FROM taxonomy_nodes

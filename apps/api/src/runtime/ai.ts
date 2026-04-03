@@ -1,4 +1,5 @@
 import { createCallLog, withLogDirectory } from "./call-log";
+import { retryAsync } from "./network";
 import type { ChatJsonGateway, TokenUsage } from "./types";
 
 const stripJsonFence = (content: string) =>
@@ -172,13 +173,18 @@ export class OpenAiCompatibleJsonGateway implements ChatJsonGateway {
     let failureMessage: string | undefined;
 
     try {
-      const response = await fetch(`${normalizeBaseUrl(this.options.baseUrl)}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.options.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
+      const response = await retryAsync({
+        attempts: 3,
+        initialDelayMs: 400,
+        operation: () =>
+          fetch(`${normalizeBaseUrl(this.options.baseUrl)}/chat/completions`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${this.options.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+          }),
       });
 
       if (!response.ok) {

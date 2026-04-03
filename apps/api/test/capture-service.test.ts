@@ -125,8 +125,11 @@ describe("capture-job-service", () => {
           return [
             {
               sourceId: document.url,
-              statement: `${document.title} fact`,
-              summary: `Summary for ${document.title}`,
+              statement: `${document.title} 里最值得记忆的一个问题是什么？`,
+              summary: `${document.title} 的核心知识点摘要`,
+              questionType: "open_ended",
+              answer: `${document.title} 的标准答案`,
+              explanation: `${document.title} 的解释说明`,
               evidenceQuote: `Quote from ${document.title}`,
               confidence: 0.9,
             },
@@ -180,6 +183,10 @@ describe("capture-job-service", () => {
     expect(maxActiveReads).toBe(2);
     expect(maxActiveExtractions).toBe(1);
     expect(knowledgeStore.listTruths()).toHaveLength(3);
+    expect(knowledgeStore.listTruths()[0]).toMatchObject({
+      questionType: "open_ended",
+      answer: "Frontend Guide 的标准答案",
+    });
 
     const readerCallsAfterFirstRun = readerCalls;
 
@@ -211,5 +218,159 @@ describe("capture-job-service", () => {
     const secondDetail = service.getJobDetail(secondJob.job.id)!;
     expect(secondDetail.sources.every((source) => source.contentCached)).toBe(true);
     expect(secondDetail.events.some((event) => event.label === "CACHE")).toBe(true);
+  });
+
+  test("serializes source-to-question extraction across capture jobs", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
+    const databasePath = join(tempDirectory, "recall.sqlite");
+    temporaryDirectories.push(tempDirectory);
+
+    const repository = createSqliteCaptureJobRepository(databasePath);
+    const knowledgeStore = createSqlitePersistence(databasePath);
+    let activeExtractions = 0;
+    let maxActiveExtractions = 0;
+
+    const service = new PersistentCaptureJobService({
+      repository,
+      knowledgeStore,
+      providers: [
+        {
+          kind: "grok-search",
+          async search(input) {
+            return [
+              {
+                title: `${input.query} Source`,
+                url: `https://example.com/${encodeURIComponent(input.query)}`,
+                snippet: `${input.query} snippet`,
+              },
+            ];
+          },
+        },
+      ],
+      sourceReader: {
+        async read(hit) {
+          await sleep(10);
+
+          return {
+            ...hit,
+            content: `Article body for ${hit.title}`,
+          };
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [
+            {
+              id: "frontend",
+              parentId: null,
+              level: 1,
+              name: "Frontend",
+              description: "Frontend knowledge.",
+            },
+            {
+              id: "frontend.web",
+              parentId: "frontend",
+              level: 2,
+              name: "Web",
+              description: "Browser and document work.",
+            },
+            {
+              id: "frontend.web.basics",
+              parentId: "frontend.web",
+              level: 3,
+              name: "Basics",
+              description: "Core frontend fundamentals.",
+            },
+          ];
+        },
+      },
+      truthExtractor: {
+        async extract(input) {
+          const document = input.documents[0]!;
+          activeExtractions += 1;
+          maxActiveExtractions = Math.max(maxActiveExtractions, activeExtractions);
+          await sleep(40);
+          activeExtractions -= 1;
+
+          return [
+            {
+              sourceId: document.url,
+              statement: `${document.title} 里的高频题是什么？`,
+              summary: `${document.title} 的标准答案摘要`,
+              questionType: "open_ended",
+              answer: `${document.title} 的标准答案`,
+              explanation: `${document.title} 的展开说明`,
+              evidenceQuote: `Quote from ${document.title}`,
+              confidence: 0.92,
+            },
+          ];
+        },
+      },
+      tagClassifier: {
+        async classify(input: { truths: Array<unknown> }) {
+          return input.truths.map(() => ({
+            level1TagId: "frontend",
+            level2TagId: "frontend.web",
+            level3TagId: "frontend.web.basics",
+          }));
+        },
+      } as any,
+      embedder: {
+        async embed(input: { texts: string[] }) {
+          return input.texts.map(() => [0.1, 0.2, 0.3]);
+        },
+      },
+    });
+
+    const firstJob = await service.createJob({
+      query: "react",
+      provider: "grok-search",
+      searchLimit: 1,
+      readConcurrency: 2,
+    });
+    const secondJob = await service.createJob({
+      query: "css",
+      provider: "grok-search",
+      searchLimit: 1,
+      readConcurrency: 2,
+    });
+
+    await waitFor(
+      () => repository.getJob(firstJob.job.id),
+      (job) => job.status === "ready_to_read",
+    );
+    await waitFor(
+      () => repository.getJob(secondJob.job.id),
+      (job) => job.status === "ready_to_read",
+    );
+
+    await Promise.all([
+      service.startProcessing({
+        jobId: firstJob.job.id,
+        readConcurrency: 2,
+      }),
+      service.startProcessing({
+        jobId: secondJob.job.id,
+        readConcurrency: 2,
+      }),
+    ]);
+
+    const completedFirstJob = await waitFor(
+      () => repository.getJob(firstJob.job.id),
+      (job) => job.status === "completed",
+      6000,
+    );
+    const completedSecondJob = await waitFor(
+      () => repository.getJob(secondJob.job.id),
+      (job) => job.status === "completed",
+      6000,
+    );
+
+    expect(completedFirstJob.truthCount).toBe(1);
+    expect(completedSecondJob.truthCount).toBe(1);
+    expect(maxActiveExtractions).toBe(1);
+
+    const secondDetail = service.getJobDetail(secondJob.job.id)!;
+    expect(secondDetail.events.some((event) => event.text.includes("shared AI extraction lane"))).toBe(true);
   });
 });

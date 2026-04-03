@@ -53,8 +53,11 @@ describe("api", () => {
         truths: [
           {
             id: "truth-1",
-            statement: "React state updates are batched during the same event loop turn.",
-            summary: "Updates are batched in a single event.",
+            statement: "React 在同一个事件循环中会如何处理多次 state update？",
+            summary: "同一事件中的更新会被批处理。",
+            questionType: "open_ended",
+            answer: "React 会把同一事件循环中的多次 state 更新批处理后再统一提交，以减少重复渲染。",
+            explanation: "这是 React 渲染性能优化的核心机制之一，也是面试中常见的开放题。",
             evidenceQuote: "React batches updates within one event.",
             confidence: 0.92,
             sourceUrl: "https://react.dev",
@@ -64,8 +67,17 @@ describe("api", () => {
           },
           {
             id: "truth-2",
-            statement: "Hooks must be called in the same order on every render.",
-            summary: "Hook ordering must stay stable.",
+            statement: "关于 Hooks 的调用顺序，下面哪项是正确的？",
+            summary: "Hooks 必须在每次渲染时保持相同调用顺序。",
+            questionType: "multiple_choice",
+            options: [
+              "只要组件最终渲染成功，Hooks 顺序可以变化",
+              "Hooks 必须在每次渲染时保持相同调用顺序",
+              "只有 useState 需要稳定顺序，其他 Hooks 不需要",
+              "Hooks 可以放进条件分支里，只要开发者能保证逻辑正确",
+            ],
+            answer: "Hooks 必须在每次渲染时保持相同调用顺序",
+            explanation: "React 依赖 Hook 调用顺序去把状态槽位和具体 Hook 对应起来。",
             evidenceQuote: "Hooks rely on call order.",
             confidence: 0.88,
             sourceUrl: "https://react.dev",
@@ -123,7 +135,21 @@ describe("api", () => {
       new Request("http://localhost/recommendations?now=2026-04-02T08:00:00.000Z"),
     );
 
-    expect(await truthsResponse.json()).toHaveLength(2);
+    const truthsBody = await truthsResponse.json();
+    expect(truthsBody).toHaveLength(2);
+    expect(truthsBody[0]).toMatchObject({
+      questionType: "open_ended",
+      answer: "React 会把同一事件循环中的多次 state 更新批处理后再统一提交，以减少重复渲染。",
+    });
+    expect(truthsBody[1]).toMatchObject({
+      questionType: "multiple_choice",
+      options: [
+        "只要组件最终渲染成功，Hooks 顺序可以变化",
+        "Hooks 必须在每次渲染时保持相同调用顺序",
+        "只有 useState 需要稳定顺序，其他 Hooks 不需要",
+        "Hooks 可以放进条件分支里，只要开发者能保证逻辑正确",
+      ],
+    });
     expect(await graphResponse.json()).toEqual([
       {
         id: "engineering",
@@ -182,13 +208,13 @@ describe("api", () => {
     expect(await recommendationResponse.json()).toEqual([
       {
         truthId: "truth-2",
-        statement: "Hooks must be called in the same order on every render.",
+        statement: "关于 Hooks 的调用顺序，下面哪项是正确的？",
         level3TagId: "react",
         score: 1,
       },
       {
         truthId: "truth-1",
-        statement: "React state updates are batched during the same event loop turn.",
+        statement: "React 在同一个事件循环中会如何处理多次 state update？",
         level3TagId: "react",
         score: 0.84,
       },

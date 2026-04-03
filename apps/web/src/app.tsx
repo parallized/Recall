@@ -124,9 +124,9 @@ const capturePhaseLabel: Record<CaptureJobPhase, string> = {
   idle: "等待中",
   search: "信源检索",
   read: "正文读取",
-  truths: "事实抽取",
+  truths: "题目抽取",
   taxonomy: "分类规划",
-  classify: "事实绑定",
+  classify: "题目绑定",
   embed: "向量化",
   persist: "持久化",
 };
@@ -680,7 +680,7 @@ export const App = () => {
                                   className="bg-accent text-white px-8 py-3 rounded-full text-[12px] font-bold hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-20 flex items-center gap-3 shadow-[0_10px_30px_rgba(var(--accent-rgb),0.2)]"
                                 >
                                   {startingCaptureProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : <Zap className="w-4 h-4 fill-white"/>}
-                                  <span>Start Research Flow</span>
+                                  <span>Start Question Flow</span>
                                 </button>
                             </div>
                           </div>
@@ -728,7 +728,7 @@ export const App = () => {
                            </div>
                            <div className="text-center space-y-3">
                              <h3 className="text-xl font-bold text-ink tracking-tight">Select active intelligence</h3>
-                             <p className="text-steel/40 text-[12px] max-w-[240px] mx-auto leading-relaxed">Choose a research topic from the sidebar to begin deep fact extraction and synthesis.</p>
+                             <p className="text-steel/40 text-[12px] max-w-[240px] mx-auto leading-relaxed">Choose a topic from the sidebar to begin question-bank capture, source reading, and study-card generation.</p>
                            </div>
                         </div>
                       )}

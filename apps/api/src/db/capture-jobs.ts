@@ -89,6 +89,10 @@ type TruthDraftRow = {
   source_url: string;
   statement: string;
   summary: string;
+  question_type: string | null;
+  options_json: string | null;
+  answer: string | null;
+  explanation: string | null;
   evidence_quote: string;
   confidence: number;
 };
@@ -176,6 +180,10 @@ const mapTruthDraftRow = (row: TruthDraftRow): StoredTruthDraft => ({
   sourceId: row.source_url,
   statement: row.statement,
   summary: row.summary,
+  questionType: row.question_type as StoredTruthDraft["questionType"],
+  options: row.options_json ? JSON.parse(row.options_json) : undefined,
+  answer: row.answer ?? undefined,
+  explanation: row.explanation ?? undefined,
   evidenceQuote: row.evidence_quote,
   confidence: row.confidence,
 });
@@ -228,6 +236,16 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
   }
 
   const db = new Database(databasePath, { create: true });
+  const ensureColumn = (table: string, column: string, definition: string) => {
+    const columns = db
+      .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+      .all()
+      .map((entry) => entry.name);
+
+    if (!columns.includes(column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  };
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS capture_jobs (
@@ -288,6 +306,10 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
       source_url TEXT NOT NULL,
       statement TEXT NOT NULL,
       summary TEXT NOT NULL,
+      question_type TEXT,
+      options_json TEXT,
+      answer TEXT,
+      explanation TEXT,
       evidence_quote TEXT NOT NULL,
       confidence REAL NOT NULL
     );
@@ -303,6 +325,10 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
     CREATE INDEX IF NOT EXISTS idx_capture_job_events_job_id ON capture_job_events (job_id);
     CREATE INDEX IF NOT EXISTS idx_capture_job_truth_drafts_job_id ON capture_job_truth_drafts (job_id);
   `);
+  ensureColumn("capture_job_truth_drafts", "question_type", "TEXT");
+  ensureColumn("capture_job_truth_drafts", "options_json", "TEXT");
+  ensureColumn("capture_job_truth_drafts", "answer", "TEXT");
+  ensureColumn("capture_job_truth_drafts", "explanation", "TEXT");
 
   const insertJob = db.query(`
     INSERT INTO capture_jobs (
@@ -346,8 +372,8 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
   `);
   const insertSourceTruthDraft = db.query(`
     INSERT INTO capture_job_truth_drafts (
-      id, job_id, source_url, statement, summary, evidence_quote, confidence
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      id, job_id, source_url, statement, summary, question_type, options_json, answer, explanation, evidence_quote, confidence
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const listTruthDraftsQuery = db.query<TruthDraftRow, [string]>(
     `SELECT * FROM capture_job_truth_drafts WHERE job_id = ? ORDER BY rowid ASC`,
@@ -582,6 +608,10 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
             sourceUrl,
             draft.statement,
             draft.summary,
+            draft.questionType ?? null,
+            draft.options ? JSON.stringify(draft.options) : null,
+            draft.answer ?? null,
+            draft.explanation ?? null,
             draft.evidenceQuote,
             draft.confidence,
           );

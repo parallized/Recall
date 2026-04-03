@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { createCallLog, withLogDirectory } from "./call-log";
+import { retryAsync } from "./network";
 import type { SearchHit, SearchProvider, TokenUsage } from "./types";
 
 const webSearchResponseSchema = z.object({
@@ -44,17 +45,38 @@ const normalizeUsage = (usage?: {
   totalTokens: usage?.total_tokens ?? 0,
 });
 
+export const buildStudySearchQuery = (query: string) =>
+  [
+    query,
+    "题库",
+    "面试题",
+    "问答",
+    "练习题",
+    "question bank",
+    "interview questions",
+    "quiz",
+    "faq",
+    "tutorial",
+    "guide",
+    "official docs",
+    "reference",
+  ].join(" ");
+
 const buildGrokSearchUserPrompt = (input: { query: string; limit: number }) =>
   [
-    "Use live web search to find current, relevant public pages for the query below before answering.",
+    "Use live web search to find current, relevant public pages for building a memorization-oriented question bank.",
     'Return only raw JSON with the shape {"results":[{"title":"","url":"","snippet":""}]}.',
     "Do not return markdown, prose, analysis, citations, bullet lists, or code fences.",
     "Every result must contain a direct canonical page URL and a concise grounded snippet.",
     "If there are fewer strong matches than requested, return fewer results instead of fabricating any entry.",
+    "Prioritize pages that look like interview question banks, quiz collections, FAQ pages, cheat sheets, flashcards, exam prep, or pages with many discrete Q&A items.",
+    "If the topic does not have enough obvious question-bank pages, fill the remaining slots with dense official docs, standards, tutorials, handbooks, or reference guides that can be converted into questions later.",
+    "Prefer pages with substantial knowledge density over thin landing pages or product marketing pages.",
+    "Diversify across subtopics and publishers so the result set can support a large study set.",
     "",
     `Query: ${input.query}`,
     `Return at most ${input.limit} results.`,
-    "Prefer primary sources, official documentation, or direct publisher pages when available.",
+    `Expanded search intent: ${buildStudySearchQuery(input.query)}`,
     "Search the live web now and return the JSON object immediately.",
   ].join("\n");
 
@@ -135,13 +157,18 @@ export class GrokWebSearchProvider implements SearchProvider {
     let failureMessage: string | undefined;
 
     try {
-      const response = await fetch(`${normalizeBaseUrl(this.options.baseUrl)}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.options.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
+      const response = await retryAsync({
+        attempts: 3,
+        initialDelayMs: 400,
+        operation: () =>
+          fetch(`${normalizeBaseUrl(this.options.baseUrl)}/chat/completions`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${this.options.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestBody),
+          }),
       });
 
       if (!response.ok) {
