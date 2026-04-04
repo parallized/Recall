@@ -428,7 +428,7 @@ const DashboardView = ({ progress }: { progress: TagProgress[] }) => {
   const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6 duration-1000 ease-out max-w-5xl mx-auto py-4">
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6 duration-1000 ease-out py-12 px-12">
       <header className="mb-6">
         <h1 className="text-3xl font-bold text-ink tracking-tight mb-3">概览</h1>
         <div className="flex flex-wrap items-center gap-5 text-steel text-[12px] font-medium opacity-60">
@@ -501,7 +501,7 @@ const SearchView = () => {
   };
 
   return (
-    <div className="max-w-3xl mx-auto py-8 animate-in fade-in slide-in-from-bottom-8 duration-1000 ease-out">
+    <div className="py-8 px-12 animate-in fade-in slide-in-from-bottom-8 duration-1000 ease-out">
       <div className="relative group/search">
         <div className="absolute inset-y-0 left-6 flex items-center pointer-events-none text-steel/30 group-focus-within/search:text-accent transition-colors duration-500">
           <Search className="w-6 h-6" />
@@ -774,11 +774,8 @@ export const App = () => {
       <div className="fixed top-0 left-0 right-0 h-2 px-8 flex items-center justify-end z-50">
       </div>
 
-      {/* Main Content Area */}
-      <main className={cn(
-        "w-full mx-auto transition-all duration-500",
-        view === "collect" ? "h-screen pt-0" : "px-8 max-w-7xl pt-4"
-      )}>
+      {/* Main Content Area - Stable container to prevent jumpy transitions */}
+      <main className="flex-1 h-screen relative overflow-hidden">
         {loading && progress.length === 0 ? (
           <div className="h-[60vh] flex flex-col items-center justify-center space-y-4">
             <Loader2 className="w-10 h-10 text-accent animate-spin opacity-40" />
@@ -788,22 +785,32 @@ export const App = () => {
           <AnimatePresence mode="wait">
             <motion.div
               key={view}
-              initial={{ opacity: 0, scale: 0.98 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.98 }}
-              transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
               className="h-full"
             >
-              {view === "dashboard" && <DashboardView progress={progress} />}
-              {view === "search" && <SearchView />}
+              {view === "dashboard" && (
+                <div className="h-full overflow-y-auto custom-scrollbar px-12 pt-12">
+                  <DashboardView progress={progress} />
+                </div>
+              )}
+              {view === "search" && (
+                <div className="h-full overflow-y-auto custom-scrollbar px-12 pt-12">
+                  <SearchView />
+                </div>
+              )}
               {view === "truths" && (
-                <RepositoryView
-                  apiBaseUrl={API_BASE_URL}
-                  refreshKey={selectedCaptureJob?.job.collectionId ?? null}
-                />
+                <div className="h-full">
+                  <RepositoryView
+                    apiBaseUrl={API_BASE_URL}
+                    refreshKey={selectedCaptureJob?.job.collectionId ?? null}
+                  />
+                </div>
               )}
               {view === "collect" && (
-                <div className="flex bg-white h-screen overflow-hidden animate-in fade-in duration-700">
+                <div className="flex bg-white h-screen overflow-hidden">
                   {/* Left: Organized Sidebar */}
                   <aside className="w-[320px] bg-[#f9f9f9] border-r border-line flex flex-col shrink-0">
                     <header className="px-8 pt-10 pb-4">
@@ -815,7 +822,7 @@ export const App = () => {
                     <div className="px-7 pb-6 space-y-4 border-b border-line/40 mb-6 transition-all">
                       <div className="space-y-2.5">
                         <div className="px-1 flex items-center justify-between">
-                          <label className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">New Capture</label>
+                          <label className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">搜集新内容</label>
                         </div>
                         <div className="relative group">
                           <input
@@ -849,7 +856,7 @@ export const App = () => {
                     {/* Task List */}
                     <div className="flex-1 overflow-hidden flex flex-col">
                       <div className="px-8 pb-3 flex items-center justify-between">
-                        <h3 className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">All Jobs</h3>
+                        <h3 className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">搜集列表</h3>
                         <div className="text-[9px] font-black text-ink/10">{captureJobs.length}</div>
                       </div>
                       
@@ -909,7 +916,7 @@ export const App = () => {
                   {/* Right: Focused Content */}
                   <main className="flex-1 bg-white overflow-y-auto relative custom-scrollbar">
                     {selectedCaptureJob ? (
-                      <div className="max-w-5xl mx-auto px-12 pt-16 pb-32 animate-in fade-in slide-in-from-right-4 duration-700">
+                      <div className="px-12 pt-16 pb-32">
                         {/* Header Section */}
                         <header className="flex items-end justify-between gap-8 pb-8 border-b border-line/60 mb-8">
                           <div className="space-y-3">
@@ -1051,7 +1058,7 @@ export const App = () => {
                 </div>
               )}
               {view === "settings" && (
-                <div className="flex flex-col items-center justify-center h-[60vh] text-ink/20 space-y-4 animate-in fade-in duration-700">
+                <div className="flex flex-col items-center justify-center h-[60vh] text-ink/20 space-y-4">
                   <Settings className="w-16 h-16 opacity-10" />
                   <p className="font-bold tracking-widest uppercase text-xs">偏好设置配置中</p>
                 </div>
