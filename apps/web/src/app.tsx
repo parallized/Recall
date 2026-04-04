@@ -218,6 +218,16 @@ const sourceStatusLabel: Record<CaptureSourceStatus, string> = {
   failed: "采集失败",
 };
 
+const formatTokens = (tokens: number) => {
+  if (tokens >= 100000000) {
+    return (tokens / 100000000).toFixed(2) + "亿";
+  }
+  if (tokens >= 10000) {
+    return (tokens / 10000).toFixed(1) + "万";
+  }
+  return tokens.toString();
+};
+
 type PendingStageKey =
   | "source_read"
   | "question_extract"
@@ -796,31 +806,31 @@ export const App = () => {
                 <div className="flex bg-white h-screen overflow-hidden animate-in fade-in duration-700">
                   {/* Left: Organized Sidebar */}
                   <aside className="w-[320px] bg-[#f9f9f9] border-r border-line flex flex-col shrink-0">
-                    <header className="p-8 pb-6">
-                      <h1 className="text-2xl font-bold text-ink tracking-tight">知识采集</h1>
-                      <p className="text-ink/60 text-[12px] mt-1 font-medium leading-relaxed">自动化知识获取与研究中心</p>
+                    <header className="px-8 pt-10 pb-4">
+                      <h1 className="text-[22px] font-bold text-ink tracking-tight">知识采集</h1>
+                      <p className="text-ink/40 text-[11px] mt-1 font-bold leading-relaxed uppercase tracking-widest">Research Station</p>
                     </header>
 
                     {/* New Task Input */}
-                    <div className="px-6 pb-6 space-y-3 border-b border-line/50 mb-4 transition-all">
-                      <div className="space-y-2">
+                    <div className="px-7 pb-6 space-y-4 border-b border-line/40 mb-6 transition-all">
+                      <div className="space-y-2.5">
                         <div className="px-1 flex items-center justify-between">
-                          <label className="text-[9px] font-black text-ink/30 uppercase tracking-[0.2em]">新建采集</label>
+                          <label className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">New Capture</label>
                         </div>
                         <div className="relative group">
                           <input
                             value={collectQuery}
                             onChange={(e) => setCollectQuery(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && handleCollect()}
-                            className="w-full h-10 bg-white border border-line focus:ring-4 focus:ring-accent/5 focus:border-accent/40 rounded-xl px-4 text-[12px] font-medium transition-all outline-none placeholder:text-ink/10"
+                            className="w-full h-9 bg-white border border-line/60 focus:ring-0 focus:border-accent/40 rounded-lg px-3.5 text-[12px] font-medium transition-all outline-none placeholder:text-ink/5"
                             placeholder="输入研究课题..."
                           />
                         </div>
-                        <div className="flex gap-1.5">
+                        <div className="flex gap-2">
                           <select
                             value={collectProvider}
                             onChange={(e) => setCollectProvider(e.target.value as "web-search-api" | "grok-search")}
-                            className="flex-1 h-8 bg-white border border-line rounded-xl px-3 text-[10px] font-bold outline-none cursor-pointer hover:border-accent/30 transition-all appearance-none"
+                            className="flex-1 h-8 bg-white border border-line/60 rounded-lg px-3 text-[10px] font-bold outline-none cursor-pointer hover:border-accent/30 transition-all appearance-none"
                           >
                             <option value="grok-search">Grok 智搜</option>
                             <option value="web-search-api">全网研究</option>
@@ -828,7 +838,7 @@ export const App = () => {
                           <button
                             disabled={creatingCaptureJob || !collectQuery.trim()}
                             onClick={handleCollect}
-                            className="h-8 bg-ink text-white px-3.5 rounded-xl transition-all active:scale-95 disabled:opacity-30 flex items-center justify-center shrink-0 shadow-sm"
+                            className="h-8 bg-ink text-white px-4 rounded-lg transition-all active:scale-95 disabled:opacity-20 flex items-center justify-center shrink-0"
                           >
                             {creatingCaptureJob ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <PlusCircle className="w-3.5 h-3.5"/>}
                           </button>
@@ -838,9 +848,9 @@ export const App = () => {
 
                     {/* Task List */}
                     <div className="flex-1 overflow-hidden flex flex-col">
-                      <div className="px-7 pb-2 flex items-center justify-between">
-                        <h3 className="text-[10px] font-black text-ink/40 uppercase tracking-[0.2em]">全量任务列表</h3>
-                        <div className="text-[10px] font-bold text-ink/20">{captureJobs.length}</div>
+                      <div className="px-8 pb-3 flex items-center justify-between">
+                        <h3 className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">All Jobs</h3>
+                        <div className="text-[9px] font-black text-ink/10">{captureJobs.length}</div>
                       </div>
                       
                       <div className="flex-1 overflow-y-auto custom-scrollbar px-3 pb-8">
@@ -906,73 +916,38 @@ export const App = () => {
                             <h2 className="text-[32px] font-bold text-ink leading-tight tracking-tight">
                               {selectedCaptureJob.job.query}
                             </h2>
-                            <div className="flex items-center gap-6">
+                            <div className="flex items-center gap-8">
                               <div className="flex items-baseline gap-2">
-                                <span className="text-[9px] font-black text-ink/30 uppercase tracking-[0.2em]">发现信源</span>
-                                <span className="text-lg font-bold text-ink">{selectedCaptureJob.job.discoveredSourceCount}</span>
+                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">发现信源 / Sources</span>
+                                <span className="text-base font-bold text-ink">{selectedCaptureJob.job.discoveredSourceCount}</span>
                               </div>
                               <div className="flex items-baseline gap-2">
-                                <span className="text-[9px] font-black text-ink/30 uppercase tracking-[0.2em]">研究消耗</span>
-                                <span className="text-lg font-bold text-ink">{Math.round(selectedCaptureJob.job.usage.totalTokens / 1000)}k</span>
+                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">消耗 / Tokens</span>
+                                <span className="text-base font-bold text-ink">{formatTokens(selectedCaptureJob.job.usage.totalTokens)}</span>
                               </div>
                             </div>
                           </div>
 
-                          <div className="pb-1">
-                           <button
-                              disabled={!canStartReading || startingCaptureProcessing}
-                              onClick={handleStartReading}
-                              className="h-10 bg-ink text-white px-6 rounded-xl text-[12px] font-bold flex items-center gap-2 shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:scale-95 transition-all disabled:opacity-20"
-                            >
-                              {startingCaptureProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : <Zap className="w-4 h-4 fill-white stroke-none"/>}
-                              <span>启动智搜知识流</span>
-                            </button>
-                          </div>
-                        </header>
+                          <div className="flex flex-col items-end gap-2.5 shrink-0 pb-1">
+                             <button
+                                disabled={!canStartReading || startingCaptureProcessing}
+                                onClick={handleStartReading}
+                                className="h-9 bg-ink text-white px-5 rounded-lg text-[11px] font-bold flex items-center gap-2 shadow hover:-translate-y-0.5 active:scale-95 transition-all disabled:opacity-10"
+                              >
+                                {startingCaptureProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Zap className="w-3.5 h-3.5 fill-white stroke-none"/>}
+                                <span>启动智搜知识流</span>
+                              </button>
 
-                        {/* Engine Status Area */}
-                        <section className="bg-[#fafafa] border border-line/40 rounded-[24px] p-6 mb-8 relative overflow-hidden">
-                          <div className="flex items-center justify-between">
-                            <div className="space-y-1.5">
-                              <label className="text-[9px] font-black text-ink/30 uppercase tracking-[0.3em]">引擎当前状态</label>
-                              <div className="text-xl font-bold text-ink tracking-tight">
-                                {activeOperation ? activeOperation.detail : "引擎处于空闲状态"}
-                              </div>
-                            </div>
-
-                            <div className="flex flex-col items-end gap-3">
-                              {activeOperation ? (
-                                <>
-                                  <div className="flex items-center gap-3 px-4 py-2 bg-ink text-white rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg">
-                                    <Loader2 className="w-4 h-4 animate-spin text-white/40" />
-                                    {pendingItemStatusLabel[activeOperation.status]}
+                              {activeOperation && (
+                                <div className="flex items-center gap-2 text-right animate-in fade-in slide-in-from-top-1 duration-500">
+                                  <Loader2 className="w-3 h-3 animate-spin text-accent" />
+                                  <div className="text-[11px] font-bold text-ink/40 tracking-tight">
+                                    {activeOperation.detail}
                                   </div>
-                                  {activeProgressLabel && (
-                                    <div className="text-sm font-black text-ink tracking-tight tabular-nums pr-2">
-                                      {activeProgressLabel}
-                                    </div>
-                                  )}
-                                </>
-                              ) : (
-                                <div className="flex items-center gap-2 px-4 py-2 border border-line rounded-full text-[10px] font-black text-ink/30 uppercase tracking-widest">
-                                  <div className="w-2 h-2 rounded-full bg-line" />
-                                  <span>系统已就绪</span>
                                 </div>
                               )}
-                            </div>
                           </div>
-                          
-                          {activeOperation && (
-                            <div className="absolute bottom-0 left-0 right-0 h-1 bg-ink/5">
-                              <motion.div 
-                                initial={{ x: "-100%" }}
-                                animate={{ x: "0%" }}
-                                transition={{ duration: 2, repeat: Infinity }}
-                                className="h-full w-full bg-accent"
-                              />
-                            </div>
-                          )}
-                        </section>
+                        </header>
 
                         {/* Notion-Style Table */}
                         <section>
@@ -981,11 +956,11 @@ export const App = () => {
                             <div className="text-[10px] font-bold text-ink/30 uppercase tracking-widest">{unifiedDisplayItems.length} ITEMS</div>
                           </div>
 
-                          <div className="border border-line/60 rounded-2xl overflow-hidden shadow-sm">
+                          <div className="overflow-hidden">
                             {/* Table Header */}
-                            <div className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 h-[28px] bg-[#fcfcfc] border-b border-line text-[9px] font-bold text-ink/30 uppercase tracking-widest">
+                            <div className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 h-[32px] bg-transparent border-b border-line/30 text-[9px] font-black text-ink/20 uppercase tracking-widest">
                               <div className="text-center">执行状态</div>
-                              <div>项目名称</div>
+                              <div>项目名称 内容</div>
                               <div className="text-center">跳转</div>
                               <div>反馈详情</div>
                             </div>
@@ -1004,14 +979,14 @@ export const App = () => {
                                   <div 
                                     key={item.id}
                                     className={cn(
-                                      "grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 min-h-[34px] border-b border-line/30 last:border-0 hover:bg-[#f9f9f9]/50 transition-colors group",
-                                      activeOperation?.itemId === item.id && "bg-accent/[0.03]"
+                                      "grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 min-h-[36px] border-b border-line/10 last:border-0 hover:bg-[#f9f9f9] transition-colors group",
+                                      activeOperation?.itemId === item.id && "bg-accent/[0.02]"
                                     )}
                                   >
                                     {/* Icon Col */}
                                     <div className="flex justify-center">
                                       {item.error ? (
-                                        <AlertCircle className="w-4 h-4 text-ember shadow-sm" />
+                                        <AlertCircle className="w-4 h-4 text-ember" />
                                       ) : activeOperation?.itemId === item.id || item.status === "reading" || item.status === "extracting" ? (
                                         <Loader2 className="w-4 h-4 text-accent animate-spin" />
                                       ) : item.status === "completed" ? (
