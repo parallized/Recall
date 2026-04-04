@@ -11,7 +11,13 @@ import {
   Calendar,
   Layers,
   History,
-  Zap
+  Zap,
+  FileText,
+  ShieldCheck,
+  CheckCircle2,
+  AlertCircle,
+  ExternalLink,
+  MoreHorizontal
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -203,6 +209,77 @@ const pendingItemStatusLabel: Record<CapturePendingItemStatus, string> = {
   failed_extract: "抽题失败",
 };
 
+const sourceStatusLabel: Record<CaptureSourceStatus, string> = {
+  pending_read: "等待读取",
+  reading: "正文读取中",
+  pending_extract: "等待分析",
+  extracting: "深度分析中",
+  completed: "采集完成",
+  failed: "采集失败",
+};
+
+type PendingStageKey =
+  | "source_read"
+  | "question_extract"
+  | "question_bind"
+  | "embedding"
+  | "persist"
+  | "failed";
+
+const pendingStageLabel: Record<PendingStageKey, string> = {
+  source_read: "信源读取",
+  question_extract: "题目抽取",
+  question_bind: "题目绑定",
+  embedding: "等待向量化",
+  persist: "等待入库",
+  failed: "失败/阻塞",
+};
+
+const pendingStageByStatus: Record<CapturePendingItemStatus, PendingStageKey> = {
+  discovering_sources: "source_read",
+  waiting_to_read: "source_read",
+  reading_source: "source_read",
+  waiting_to_extract: "question_extract",
+  extracting_questions: "question_extract",
+  waiting_for_classify: "question_bind",
+  waiting_for_finalize: "question_bind",
+  planning_taxonomy: "question_bind",
+  classifying_question: "question_bind",
+  classified_waiting_for_embed: "embedding",
+  embedding_question: "embedding",
+  embedded_waiting_for_persist: "persist",
+  persisting_question: "persist",
+  blocked_after_failure: "failed",
+  failed_read: "failed",
+  failed_extract: "failed",
+};
+
+const pendingStageRank: Record<PendingStageKey, number> = {
+  source_read: 0,
+  question_extract: 1,
+  question_bind: 2,
+  embedding: 3,
+  persist: 4,
+  failed: 5,
+};
+
+const primaryPendingStageOrder: Array<Exclude<PendingStageKey, "failed">> = [
+  "source_read",
+  "question_extract",
+  "question_bind",
+  "embedding",
+  "persist",
+];
+
+const activePendingStatuses = new Set<CapturePendingItemStatus>([
+  "reading_source",
+  "extracting_questions",
+  "planning_taxonomy",
+  "classifying_question",
+  "embedding_question",
+  "persisting_question",
+]);
+
 // --- Components ---
 
 const DockItem = ({ 
@@ -265,51 +342,74 @@ const StatCard = ({ label, value, sub, color = "accent", compact }: { label: str
 );
 
 const StatItem = ({ label, value }: { label: string, value: string | number }) => (
-  <div className="flex items-center gap-2 px-2 py-1 rounded-md bg-silver/10 border border-line/5 transition-all">
-    <span className="text-[8px] font-black text-steel/40 uppercase tracking-[0.2em]">{label}</span>
-    <span className="text-[12px] font-bold text-ink/80">{value}</span>
+  <div className="flex items-baseline gap-2.5 px-1 py-1 group/stat">
+    <span className="text-[10px] font-black text-steel/30 uppercase tracking-[0.25em] whitespace-nowrap">{label}</span>
+    <span className="text-[15px] font-bold text-ink/80 tracking-tight">{value}</span>
   </div>
 );
 
-const PendingItem = ({ item, active }: { item: CapturePendingItem; active?: boolean }) => (
-  <div className={cn(
-    "group/source flex items-center justify-between gap-4 px-4 py-2.5 rounded-[12px] transition-all cursor-default border-b border-[#efeff1]/50 last:border-0 ml-0.5",
-    active ? "bg-accent/5 border-accent/10 shadow-[0_6px_20px_rgba(var(--accent-rgb),0.08)]" : "hover:bg-silver/15",
-  )}>
-    <div className="min-w-0 flex-1 space-y-0.5">
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="text-[8px] font-black uppercase tracking-[0.2em] text-steel/25 whitespace-nowrap">
-          {item.kind === "source" ? "SOURCE" : "CARD"}
-        </span>
-        <div className="text-[13px] font-medium text-ink/90 truncate group-hover/source:text-accent transition-colors leading-tight font-sans">
-          {item.title || "Untitled Intelligence"}
+const PendingItem = ({ item, active }: { item: CapturePendingItem; active?: boolean }) => {
+  const getStatusIcon = () => {
+    if (item.error) return <AlertCircle className="w-4 h-4 text-ember" />;
+    if (active) return <Loader2 className="w-4 h-4 text-accent animate-spin" />;
+    if (item.status === "failed_read" || item.status === "failed_extract") 
+      return <AlertCircle className="w-4 h-4 text-ember" />;
+    
+    // Simplistically assuming non-active/non-error are 'completed' or 'pending'
+    const isCompleted = !active && !item.error; 
+    if (isCompleted) return <CheckCircle2 className="w-4 h-4 text-accent" />;
+    
+    return <div className="w-2 h-2 rounded-full bg-steel/30" />;
+  };
+
+  return (
+    <div className={cn(
+      "grid grid-cols-[48px_1fr_120px_1fr] items-center gap-4 px-4 py-3 border-b border-line/40 hover:bg-silver/10 transition-colors group/row",
+      active && "bg-accent/[0.03]"
+    )}>
+      {/* Col 1: Status Icon */}
+      <div className="flex justify-center">
+        {getStatusIcon()}
+      </div>
+
+      {/* Col 2: Title */}
+      <div className="min-w-0">
+        <div className={cn(
+          "text-[13px] font-bold truncate tracking-tight transition-colors",
+          active ? "text-accent" : "text-ink"
+        )}>
+          {item.title || "记录已就绪"}
         </div>
       </div>
-      <div className="text-[9px] text-steel/30 truncate tracking-tight">{item.subtitle}</div>
-      {item.error && (
-        <div className="text-[9px] text-ember/70 truncate tracking-tight">{item.error}</div>
-      )}
+
+      {/* Col 3: Link */}
+      <div className="flex items-center justify-center">
+        {item.sourceUrl ? (
+          <a 
+            href={item.sourceUrl} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="p-1.5 rounded hover:bg-accent/5 text-steel/40 hover:text-accent transition-colors"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+        ) : (
+          <span className="text-[10px] text-steel/20">--</span>
+        )}
+      </div>
+
+      {/* Col 4: Info */}
+      <div className="min-w-0">
+        <div className={cn(
+          "text-[11px] truncate font-medium",
+          item.error ? "text-ember font-bold" : "text-steel/60"
+        )}>
+          {item.error || item.subtitle || pendingItemStatusLabel[item.status]}
+        </div>
+      </div>
     </div>
-    <div className="flex items-center gap-3">
-       {active && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
-       <span className={cn(
-        "text-[8px] font-black uppercase tracking-[0.2em] whitespace-nowrap px-2 py-0.5 rounded-full border border-line/10",
-        item.status === "failed_read" || item.status === "failed_extract" || item.status === "blocked_after_failure"
-          ? "bg-ember/5 text-ember border-ember/20"
-          : item.status === "reading_source" ||
-              item.status === "extracting_questions" ||
-              item.status === "classifying_question" ||
-              item.status === "embedding_question" ||
-              item.status === "persisting_question" ||
-              item.status === "planning_taxonomy"
-            ? "bg-accent/5 text-accent border-accent/20"
-            : "bg-silver/20 text-steel/40"
-      )}>
-        {pendingItemStatusLabel[item.status]}
-      </span>
-    </div>
-  </div>
-);
+  );
+};
 
 // --- Main Views ---
 
@@ -611,41 +711,45 @@ export const App = () => {
       (selectedJob.status === "ready_to_read" || selectedJob.status === "failed"),
   );
   const pendingItems = selectedCaptureJob?.pendingItems ?? [];
+  const sources = selectedCaptureJob?.sources ?? [];
   const activeOperation = selectedCaptureJob?.activeOperation ?? null;
-  const pendingStatusGroups = Array.from(
-    pendingItems.reduce((acc, item) => {
-      acc.set(item.status, (acc.get(item.status) ?? 0) + 1);
-      return acc;
-    }, new Map<CapturePendingItemStatus, number>()),
-  )
-    .sort((left, right) => right[1] - left[1])
-    .slice(0, 4);
-  const sortedPendingItems = [...pendingItems].sort((a, b) => {
-    const aCurrent = activeOperation?.itemId === a.id;
-    const bCurrent = activeOperation?.itemId === b.id;
 
-    if (aCurrent && !bCurrent) return -1;
-    if (!aCurrent && bCurrent) return 1;
+  // Unified items list: combine sources (all found) and pendingItems (current tasks)
+  const unifiedDisplayItems = [
+    ...sources.map(s => ({
+      id: s.id,
+      title: s.title,
+      sourceUrl: s.url,
+      status: s.status, // "pending_read" | "reading" | "pending_extract" | "extracting" | "completed" | "failed"
+      error: s.error,
+      kind: "source" as const,
+      position: s.position
+    })),
+    ...pendingItems.filter(p => p.kind === "truth").map(p => ({
+      id: p.id,
+      title: p.title || "生成知识条目...",
+      sourceUrl: p.sourceUrl,
+      status: p.status,
+      error: p.error,
+      kind: "truth" as const,
+      position: p.position + 1000 // Ensure truths come after sources
+    }))
+  ].sort((a, b) => {
+    // 1. Error items first
+    if (a.error && !b.error) return -1;
+    if (!a.error && b.error) return 1;
 
-    const aActive = [
-      "reading_source",
-      "extracting_questions",
-      "planning_taxonomy",
-      "classifying_question",
-      "embedding_question",
-      "persisting_question",
-    ].includes(a.status);
-    const bActive = [
-      "reading_source",
-      "extracting_questions",
-      "planning_taxonomy",
-      "classifying_question",
-      "embedding_question",
-      "persisting_question",
-    ].includes(b.status);
-
+    // 2. Currently active items
+    const aActive = activeOperation?.itemId === a.id;
+    const bActive = activeOperation?.itemId === b.id;
     if (aActive && !bActive) return -1;
     if (!aActive && bActive) return 1;
+
+    // 3. Processing items
+    const isAProcessing = a.status === "reading" || a.status === "extracting" || a.status.includes("ing_");
+    const isBProcessing = b.status === "reading" || b.status === "extracting" || b.status.includes("ing_");
+    if (isAProcessing && !isBProcessing) return -1;
+    if (!isAProcessing && isBProcessing) return 1;
 
     return a.position - b.position;
   });
@@ -661,7 +765,10 @@ export const App = () => {
       </div>
 
       {/* Main Content Area */}
-      <main className="pt-4 px-8 w-full max-w-7xl mx-auto">
+      <main className={cn(
+        "w-full mx-auto transition-all duration-500",
+        view === "collect" ? "h-screen pt-0" : "px-8 max-w-7xl pt-4"
+      )}>
         {loading && progress.length === 0 ? (
           <div className="h-[60vh] flex flex-col items-center justify-center space-y-4">
             <Loader2 className="w-10 h-10 text-accent animate-spin opacity-40" />
@@ -686,229 +793,286 @@ export const App = () => {
                 />
               )}
               {view === "collect" && (
-                <div className="min-h-screen bg-white animate-in fade-in duration-700">
-                  <div className="grid lg:grid-cols-[320px_minmax(0,1fr)] min-h-screen">
-                    {/* Left: Heptabase Sidebar Style */}
-                    <div className="bg-[#f8f9fa] border-r border-[#efeff1] px-8 pt-8 pb-32 space-y-10 overflow-hidden">
-                      <header>
-                        <h1 className="text-2xl font-bold text-ink tracking-tighter mb-1">知识采集</h1>
-                        <p className="text-steel/50 text-[11px] font-medium leading-tight">异步检索、读取与抽取全网事实</p>
-                      </header>
+                <div className="flex bg-white h-screen overflow-hidden animate-in fade-in duration-700">
+                  {/* Left: Organized Sidebar */}
+                  <aside className="w-[320px] bg-[#f9f9f9] border-r border-line flex flex-col shrink-0">
+                    <header className="p-8 pb-6">
+                      <h1 className="text-2xl font-bold text-ink tracking-tight">知识采集</h1>
+                      <p className="text-ink/60 text-[12px] mt-1 font-medium leading-relaxed">自动化知识获取与研究中心</p>
+                    </header>
 
-                      {collectError && (
-                        <div className="text-[11px] font-bold text-ember bg-ember/5 border border-ember/20 rounded-[14px] px-4 py-3 animate-in fade-in zoom-in">
-                          {collectError}
+                    {/* New Task Input */}
+                    <div className="px-6 pb-6 space-y-3 border-b border-line/50 mb-4 transition-all">
+                      <div className="space-y-2">
+                        <div className="px-1 flex items-center justify-between">
+                          <label className="text-[9px] font-black text-ink/30 uppercase tracking-[0.2em]">新建采集</label>
                         </div>
-                      )}
-
-                      <div className="space-y-6">
-                        <div className="space-y-4">
-                          <h3 className="text-[10px] font-black text-steel/30 uppercase tracking-[0.2em] px-1">NEW_COLLECTION</h3>
-                          <div className="space-y-3">
-                             <input
-                              value={collectQuery}
-                              onChange={(e) => setCollectQuery(e.target.value)}
-                              onKeyDown={(e) => e.key === "Enter" && handleCollect()}
-                              className="w-full bg-white border border-[#efeff1] focus:ring-4 focus:ring-accent/5 focus:border-accent/40 rounded-[14px] px-4 py-3 text-[13px] font-medium transition-all outline-none placeholder:text-steel/20 shadow-sm"
-                              placeholder="Search anything..."
-                            />
-                            <div className="flex gap-2">
-                               <select
-                                  value={collectProvider}
-                                  onChange={(e) => setCollectProvider(e.target.value as "web-search-api" | "grok-search")}
-                                  className="flex-1 bg-white border border-[#efeff1] rounded-[12px] px-3 py-2 text-[10px] font-bold outline-none cursor-pointer hover:border-accent/20 transition-colors shadow-sm"
-                                >
-                                  <option value="grok-search">Grok Enterprise</option>
-                                  <option value="web-search-api">Web Research</option>
-                                </select>
-                                <button
-                                  disabled={creatingCaptureJob || !collectQuery.trim()}
-                                  onClick={handleCollect}
-                                  className="bg-ink text-white px-5 py-2 rounded-[12px] text-[10px] font-black hover:opacity-90 active:scale-95 transition-all disabled:opacity-20 flex items-center justify-center shadow-lg shadow-black/5"
-                                >
-                                  {creatingCaptureJob ? <Loader2 className="w-3 h-3 animate-spin"/> : <Search className="w-3.5 h-3.5"/>}
-                                </button>
-                            </div>
-                          </div>
+                        <div className="relative group">
+                          <input
+                            value={collectQuery}
+                            onChange={(e) => setCollectQuery(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && handleCollect()}
+                            className="w-full h-10 bg-white border border-line focus:ring-4 focus:ring-accent/5 focus:border-accent/40 rounded-xl px-4 text-[12px] font-medium transition-all outline-none placeholder:text-ink/10"
+                            placeholder="输入研究课题..."
+                          />
                         </div>
-
-                        <div className="space-y-4 pt-2 border-t border-[#efeff1]">
-                          <h3 className="text-[10px] font-black text-steel/30 uppercase tracking-[0.2em] px-1">ACTIVE_TOPICS</h3>
-                          <div className="relative overflow-hidden group/list">
-                            <div className="space-y-0.5 max-h-[460px] pb-10">
-                              {captureJobs.filter(j => j.status !== 'completed').length === 0 ? (
-                                <div className="py-20 text-center text-[10px] text-steel/10 font-bold uppercase tracking-[0.5em] border-2 border-dashed border-[#efeff1] rounded-[24px]">
-                                   EMPTY_POOL
-                                </div>
-                              ) : (
-                                captureJobs.filter(j => j.status !== 'completed').slice(0, 10).map((job) => (
-                                  <button
-                                    key={job.id}
-                                    onClick={() => {
-                                      setSelectedCaptureJobId(job.id);
-                                      void fetchCaptureJobs(job.id, true);
-                                    }}
-                                    className={cn(
-                                      "w-full text-left px-4 py-3.5 transition-all relative overflow-hidden group/item rounded-[12px]",
-                                      selectedCaptureJobId === job.id
-                                        ? "bg-white shadow-[0_4px_20px_rgba(0,0,0,0.04)] scale-[1.02]"
-                                        : "hover:bg-white/50",
-                                    )}
-                                  >
-                                    {selectedCaptureJobId === job.id && (
-                                      <div className="absolute top-0 left-0 w-0.5 h-full bg-accent" />
-                                    )}
-                                    <div className="flex items-center justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <div className={cn("text-[13px] font-bold transition-colors truncate", selectedCaptureJobId === job.id ? "text-ink" : "text-ink/60")}>{job.query}</div>
-                                        <div className="flex items-center gap-2 mt-1">
-                                          <span className="text-[8px] font-black uppercase tracking-wider text-accent">{captureStatusLabel[job.status]}</span>
-                                          <span className="text-[8px] text-steel/40 leading-none">/ {job.provider.split('-')[0].toUpperCase()}</span>
-                                        </div>
-                                      </div>
-                                      {job.status === 'processing' && <Loader2 className="w-3 h-3 animate-spin text-accent/20" />}
-                                    </div>
-                                  </button>
-                                ))
-                              )}
-                            </div>
-                            {captureJobs.filter(j => j.status !== 'completed').length > 10 && (
-                              <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-[#f8f9fa] to-transparent pointer-events-none z-10" />
-                            )}
-                          </div>
+                        <div className="flex gap-1.5">
+                          <select
+                            value={collectProvider}
+                            onChange={(e) => setCollectProvider(e.target.value as "web-search-api" | "grok-search")}
+                            className="flex-1 h-8 bg-white border border-line rounded-xl px-3 text-[10px] font-bold outline-none cursor-pointer hover:border-accent/30 transition-all appearance-none"
+                          >
+                            <option value="grok-search">Grok 智搜</option>
+                            <option value="web-search-api">全网研究</option>
+                          </select>
+                          <button
+                            disabled={creatingCaptureJob || !collectQuery.trim()}
+                            onClick={handleCollect}
+                            className="h-8 bg-ink text-white px-3.5 rounded-xl transition-all active:scale-95 disabled:opacity-30 flex items-center justify-center shrink-0 shadow-sm"
+                          >
+                            {creatingCaptureJob ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <PlusCircle className="w-3.5 h-3.5"/>}
+                          </button>
                         </div>
                       </div>
                     </div>
 
-                    {/* Right: Heptabase Main Workspace Style */}
-                    <div className="bg-white px-12 pt-8 pb-32 overflow-hidden">
-                      {selectedCaptureJob ? (
-                        <div className="animate-in fade-in duration-500 space-y-10 max-w-5xl">
-                          {/* Workspace Header */}
-                          <div className="flex flex-wrap items-end justify-between gap-8 pb-8 border-b border-[#efeff1]/60">
-                            <div className="space-y-4">
-                               <div className="flex items-center gap-2 text-steel/40 text-[10px] font-black tracking-widest uppercase mb-2">
-                                  <span>Action_Context</span>
-                                  <span>/</span>
-                                  <span className="text-accent">{selectedCaptureJob.job.provider.toUpperCase()}</span>
-                               </div>
-                               <h2 className="text-[32px] font-bold text-ink tracking-tighter leading-none">{selectedCaptureJob.job.query}</h2>
-                               <div className="flex flex-wrap items-center gap-3 pt-2">
-                                 <StatItem label="Found" value={selectedCaptureJob.job.discoveredSourceCount} />
-                                 <StatItem label="Tokens" value={`${Math.round(selectedCaptureJob.job.usage.totalTokens / 1000)}k`} />
-                                 <div className="inline-flex items-center px-2 py-1 rounded bg-accent/5 border border-accent/10">
-                                    <span className="text-[8px] font-black text-accent uppercase tracking-[0.2em]">{captureStatusLabel[selectedCaptureJob.job.status]}</span>
-                                 </div>
-                               </div>
+                    {/* Task List */}
+                    <div className="flex-1 overflow-hidden flex flex-col">
+                      <div className="px-7 pb-2 flex items-center justify-between">
+                        <h3 className="text-[10px] font-black text-ink/40 uppercase tracking-[0.2em]">全量任务列表</h3>
+                        <div className="text-[10px] font-bold text-ink/20">{captureJobs.length}</div>
+                      </div>
+                      
+                      <div className="flex-1 overflow-y-auto custom-scrollbar px-3 pb-8">
+                        <div className="space-y-1">
+                          {captureJobs.length === 0 ? (
+                            <div className="py-20 text-center border border-dashed border-line/50 rounded-2xl mx-4">
+                              <p className="text-[10px] text-ink/20 font-bold uppercase tracking-widest">暂无采集历史</p>
                             </div>
-                            
-                            <div className="flex items-center gap-3">
-                               <button
-                                  disabled={!canStartReading || startingCaptureProcessing}
-                                  onClick={handleStartReading}
-                                  className="bg-accent text-white px-8 py-3 rounded-full text-[12px] font-bold hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-20 flex items-center gap-3 shadow-[0_10px_30px_rgba(var(--accent-rgb),0.2)]"
-                                >
-                                  {startingCaptureProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : <Zap className="w-4 h-4 fill-white"/>}
-                                  <span>Start Question Flow</span>
-                                </button>
-                            </div>
-                          </div>
-
-                          <div className="space-y-8">
-                             <div className="rounded-[28px] border border-accent/10 bg-[linear-gradient(135deg,rgba(var(--accent-rgb),0.08),rgba(255,255,255,0.94))] px-6 py-5 shadow-[0_18px_40px_rgba(var(--accent-rgb),0.08)]">
-                               <div className="flex flex-wrap items-start justify-between gap-5">
-                                 <div className="space-y-2 min-w-0">
-                                   <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.35em] text-accent/70">
-                                     <BrainCircuit className="w-3.5 h-3.5" />
-                                     <span>AI_NOW</span>
-                                   </div>
-                                   <div className="text-[20px] font-bold text-ink tracking-tight leading-tight">
-                                     {activeOperation ? activeOperation.detail : "当前没有正在执行的 AI 操作"}
-                                   </div>
-                                   <div className="text-[12px] text-steel/60 leading-relaxed">
-                                     {activeOperation ? activeOperation.title : "如果这里只剩本地向量化或入库，说明 AI 阶段已经跑完了。"}
-                                   </div>
-                                   {activeOperation?.subtitle && (
-                                     <div className="text-[10px] text-steel/40 tracking-tight truncate">
-                                       {activeOperation.subtitle}
-                                     </div>
-                                   )}
-                                 </div>
-
-                                 <div className="flex flex-col items-end gap-2">
-                                   {activeOperation ? (
-                                     <>
-                                       <div className="inline-flex items-center gap-2 rounded-full border border-accent/15 bg-white/80 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.25em] text-accent">
-                                         <Loader2 className="w-3 h-3 animate-spin" />
-                                         {pendingItemStatusLabel[activeOperation.status]}
-                                       </div>
-                                       {activeProgressLabel && (
-                                         <div className="text-[11px] font-bold text-ink/60">{activeProgressLabel}</div>
-                                       )}
-                                     </>
-                                   ) : (
-                                     <div className="inline-flex items-center gap-2 rounded-full border border-[#efeff1] bg-white/80 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.25em] text-steel/50">
-                                       <span>AI_IDLE</span>
-                                     </div>
-                                   )}
-                                 </div>
-                               </div>
-                             </div>
-
-                             <div className="flex items-center justify-between px-2">
-                                <h3 className="text-[10px] font-black text-steel/20 uppercase tracking-[0.5em]">Active_Action_Queue</h3>
-                                <div className="flex items-center gap-3">
-                                   <span className="text-[10px] font-bold text-ink/30 italic">{pendingItems.length} pending</span>
-                                </div>
-                             </div>
-
-                             {pendingStatusGroups.length > 0 && (
-                               <div className="flex flex-wrap gap-2 px-2">
-                                 {pendingStatusGroups.map(([status, count]) => (
-                                   <div
-                                     key={status}
-                                     className="inline-flex items-center gap-2 rounded-full border border-[#efeff1] bg-white px-3 py-1 text-[9px] font-bold text-steel/60"
-                                   >
-                                     <span>{pendingItemStatusLabel[status]}</span>
-                                     <span className="text-ink/60">{count}</span>
-                                   </div>
-                                 ))}
-                               </div>
-                             )}
-
-                             <div className="relative overflow-hidden border border-[#efeff1]/50 rounded-[24px] bg-[#fcfcfc]/50 p-2">
-                               <div className="space-y-px pb-20">
-                                 {pendingItems.length === 0 ? (
-                                    <div className="py-32 text-center text-[10px] text-steel/10 font-bold uppercase tracking-[1em]">SYSTEM_STABLE</div>
-                                 ) : (
-                                   sortedPendingItems
-                                      .slice(0, 10)
-                                      .map((item) => (
-                                      <PendingItem key={item.id} item={item} active={activeOperation?.itemId === item.id} />
-                                    ))
-                                 )}
-                               </div>
-                               {pendingItems.length > 10 && (
-                                  <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-white to-transparent pointer-events-none z-10 flex items-end justify-center pb-8">
-                                     <span className="text-[9px] font-black text-steel/20 tracking-[1em] uppercase">Deep_Processing</span>
+                          ) : (
+                            captureJobs.map((job) => (
+                              <button
+                                key={job.id}
+                                onClick={() => {
+                                  setSelectedCaptureJobId(job.id);
+                                  void fetchCaptureJobs(job.id, true);
+                                }}
+                                className={cn(
+                                  "w-full text-left px-4 py-2.5 rounded-lg transition-all relative group/item mb-1",
+                                  selectedCaptureJobId === job.id
+                                    ? "bg-white shadow-sm ring-1 ring-line/60"
+                                    : "hover:bg-white/40"
+                                )}
+                              >
+                                {selectedCaptureJobId === job.id && (
+                                  <div className="absolute left-1 top-1/2 -translate-y-1/2 w-1 h-1/2 bg-accent rounded-full" />
+                                )}
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <h4 className={cn(
+                                      "text-[13px] font-bold truncate leading-snug tracking-tight",
+                                      selectedCaptureJobId === job.id ? "text-ink" : "text-ink/70"
+                                    )}>
+                                      {job.query}
+                                    </h4>
+                                    <div className="flex items-center gap-2 mt-1.5 font-bold uppercase text-[9px] tracking-widest">
+                                      <span className={cn(
+                                        job.status === "completed" ? "text-accent" : "text-ink/40"
+                                      )}>
+                                        {captureStatusLabel[job.status]}
+                                      </span>
+                                      <span className="w-1 h-1 rounded-full bg-line" />
+                                      <span className="text-ink/30 tabular-nums">{job.provider.split('-')[0]}</span>
+                                    </div>
                                   </div>
-                               )}
-                             </div>
-                          </div>
+                                  {job.status === 'processing' && <Loader2 className="w-3.5 h-3.5 animate-spin text-accent/40" />}
+                                  {job.status === 'completed' && <CheckCircle2 className="w-3.5 h-3.5 text-accent/20" />}
+                                </div>
+                              </button>
+                            ))
+                          )}
                         </div>
-                      ) : (
-                        <div className="h-[70vh] flex flex-col items-center justify-center space-y-10 group">
-                           <div className="w-24 h-24 rounded-[40px] bg-[#f8f9fa] border border-[#efeff1] flex items-center justify-center group-hover:scale-110 transition-transform duration-700">
-                             <Search className="w-8 h-8 text-steel/10" />
-                           </div>
-                           <div className="text-center space-y-3">
-                             <h3 className="text-xl font-bold text-ink tracking-tight">Select active intelligence</h3>
-                             <p className="text-steel/40 text-[12px] max-w-[240px] mx-auto leading-relaxed">Choose a topic from the sidebar to begin question-bank capture, source reading, and study-card generation.</p>
-                           </div>
-                        </div>
-                      )}
+                      </div>
                     </div>
-                  </div>
+                  </aside>
+
+                  {/* Right: Focused Content */}
+                  <main className="flex-1 bg-white overflow-y-auto relative custom-scrollbar">
+                    {selectedCaptureJob ? (
+                      <div className="max-w-5xl mx-auto px-12 pt-16 pb-32 animate-in fade-in slide-in-from-right-4 duration-700">
+                        {/* Header Section */}
+                        <header className="flex items-end justify-between gap-8 pb-8 border-b border-line/60 mb-8">
+                          <div className="space-y-3">
+                            <h2 className="text-[32px] font-bold text-ink leading-tight tracking-tight">
+                              {selectedCaptureJob.job.query}
+                            </h2>
+                            <div className="flex items-center gap-6">
+                              <div className="flex items-baseline gap-2">
+                                <span className="text-[9px] font-black text-ink/30 uppercase tracking-[0.2em]">发现信源</span>
+                                <span className="text-lg font-bold text-ink">{selectedCaptureJob.job.discoveredSourceCount}</span>
+                              </div>
+                              <div className="flex items-baseline gap-2">
+                                <span className="text-[9px] font-black text-ink/30 uppercase tracking-[0.2em]">研究消耗</span>
+                                <span className="text-lg font-bold text-ink">{Math.round(selectedCaptureJob.job.usage.totalTokens / 1000)}k</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="pb-1">
+                           <button
+                              disabled={!canStartReading || startingCaptureProcessing}
+                              onClick={handleStartReading}
+                              className="h-10 bg-ink text-white px-6 rounded-xl text-[12px] font-bold flex items-center gap-2 shadow-lg hover:shadow-xl hover:-translate-y-0.5 active:scale-95 transition-all disabled:opacity-20"
+                            >
+                              {startingCaptureProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : <Zap className="w-4 h-4 fill-white stroke-none"/>}
+                              <span>启动智搜知识流</span>
+                            </button>
+                          </div>
+                        </header>
+
+                        {/* Engine Status Area */}
+                        <section className="bg-[#fafafa] border border-line/40 rounded-[24px] p-6 mb-8 relative overflow-hidden">
+                          <div className="flex items-center justify-between">
+                            <div className="space-y-1.5">
+                              <label className="text-[9px] font-black text-ink/30 uppercase tracking-[0.3em]">引擎当前状态</label>
+                              <div className="text-xl font-bold text-ink tracking-tight">
+                                {activeOperation ? activeOperation.detail : "引擎处于空闲状态"}
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-3">
+                              {activeOperation ? (
+                                <>
+                                  <div className="flex items-center gap-3 px-4 py-2 bg-ink text-white rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg">
+                                    <Loader2 className="w-4 h-4 animate-spin text-white/40" />
+                                    {pendingItemStatusLabel[activeOperation.status]}
+                                  </div>
+                                  {activeProgressLabel && (
+                                    <div className="text-sm font-black text-ink tracking-tight tabular-nums pr-2">
+                                      {activeProgressLabel}
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                <div className="flex items-center gap-2 px-4 py-2 border border-line rounded-full text-[10px] font-black text-ink/30 uppercase tracking-widest">
+                                  <div className="w-2 h-2 rounded-full bg-line" />
+                                  <span>系统已就绪</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          
+                          {activeOperation && (
+                            <div className="absolute bottom-0 left-0 right-0 h-1 bg-ink/5">
+                              <motion.div 
+                                initial={{ x: "-100%" }}
+                                animate={{ x: "0%" }}
+                                transition={{ duration: 2, repeat: Infinity }}
+                                className="h-full w-full bg-accent"
+                              />
+                            </div>
+                          )}
+                        </section>
+
+                        {/* Notion-Style Table */}
+                        <section>
+                          <div className="flex items-center justify-between px-4 mb-4">
+                            <h3 className="text-[11px] font-black text-ink/60 uppercase tracking-[0.2em]">采集与研究任务流</h3>
+                            <div className="text-[10px] font-bold text-ink/30 uppercase tracking-widest">{unifiedDisplayItems.length} ITEMS</div>
+                          </div>
+
+                          <div className="border border-line/60 rounded-2xl overflow-hidden shadow-sm">
+                            {/* Table Header */}
+                            <div className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 h-[28px] bg-[#fcfcfc] border-b border-line text-[9px] font-bold text-ink/30 uppercase tracking-widest">
+                              <div className="text-center">执行状态</div>
+                              <div>项目名称</div>
+                              <div className="text-center">跳转</div>
+                              <div>反馈详情</div>
+                            </div>
+
+                            {/* Table Rows */}
+                            <div className="bg-white min-h-[400px]">
+                              {unifiedDisplayItems.length === 0 ? (
+                                <div className="h-[400px] flex flex-col items-center justify-center space-y-4">
+                                   <div className="w-12 h-12 rounded-full bg-[#f9f9f9] border border-line flex items-center justify-center">
+                                      <ShieldCheck className="w-6 h-6 text-ink/10" />
+                                   </div>
+                                   <p className="text-[11px] text-ink/20 font-bold uppercase tracking-[1em] ml-4">队列清空</p>
+                                </div>
+                              ) : (
+                                unifiedDisplayItems.map((item) => (
+                                  <div 
+                                    key={item.id}
+                                    className={cn(
+                                      "grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 min-h-[34px] border-b border-line/30 last:border-0 hover:bg-[#f9f9f9]/50 transition-colors group",
+                                      activeOperation?.itemId === item.id && "bg-accent/[0.03]"
+                                    )}
+                                  >
+                                    {/* Icon Col */}
+                                    <div className="flex justify-center">
+                                      {item.error ? (
+                                        <AlertCircle className="w-4 h-4 text-ember shadow-sm" />
+                                      ) : activeOperation?.itemId === item.id || item.status === "reading" || item.status === "extracting" ? (
+                                        <Loader2 className="w-4 h-4 text-accent animate-spin" />
+                                      ) : item.status === "completed" ? (
+                                        <CheckCircle2 className="w-4 h-4 text-accent/60" />
+                                      ) : (
+                                        <div className="w-1.5 h-1.5 rounded-full bg-line group-hover:scale-125 transition-transform" />
+                                      )}
+                                    </div>
+
+                                    {/* Title Col */}
+                                    <div className="min-w-0">
+                                      <div className={cn(
+                                        "text-[13.5px] font-bold truncate tracking-tight transition-colors",
+                                        activeOperation?.itemId === item.id ? "text-accent" : "text-ink"
+                                      )}>
+                                        {item.title || "正在研读文档内容..."}
+                                      </div>
+                                    </div>
+
+                                    {/* Link Col */}
+                                    <div className="flex justify-center">
+                                      {item.sourceUrl ? (
+                                        <a 
+                                          href={item.sourceUrl} 
+                                          target="_blank" 
+                                          rel="noopener noreferrer"
+                                          className="p-1.5 rounded-lg border border-transparent hover:border-line hover:bg-white text-ink/30 hover:text-ink transition-all transform active:scale-90"
+                                        >
+                                          <ExternalLink className="w-3.5 h-3.5" />
+                                        </a>
+                                      ) : (
+                                        <span className="text-ink/10 font-mono text-[9px]">--</span>
+                                      )}
+                                    </div>
+
+                                    {/* Info Col */}
+                                    <div className="min-w-0">
+                                      <div className={cn(
+                                        "text-[11px] font-bold tracking-tight truncate whitespace-nowrap",
+                                        item.error ? "text-ember" : "text-ink/40"
+                                      )}>
+                                        {item.error || (item.kind === "source" ? sourceStatusLabel[item.status as CaptureSourceStatus] : pendingItemStatusLabel[item.status as CapturePendingItemStatus])}
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </section>
+                      </div>
+                    ) : (
+                      <div className="h-full flex flex-col items-center justify-center p-20 text-center">
+                        <div className="w-24 h-24 rounded-[40px] bg-[#f9f9f9] border border-line flex items-center justify-center mb-8">
+                           <Zap className="w-8 h-8 text-ink/10" />
+                        </div>
+                        <h3 className="text-xl font-bold text-ink">尚未选择采集项</h3>
+                        <p className="text-ink/40 text-sm mt-3 max-w-sm leading-relaxed">请从左侧列表选择一个研究课题，或者发起一个新的采集任务来开始知识流。</p>
+                      </div>
+                    )}
+                  </main>
                 </div>
               )}
               {view === "settings" && (
