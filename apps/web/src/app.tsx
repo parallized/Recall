@@ -42,6 +42,23 @@ type TokenUsage = {
 type CaptureJobStatus = "queued_search" | "searching" | "ready_to_read" | "processing" | "completed" | "failed";
 type CaptureJobPhase = "idle" | "search" | "read" | "truths" | "taxonomy" | "classify" | "embed" | "persist";
 type CaptureSourceStatus = "pending_read" | "reading" | "pending_extract" | "extracting" | "completed" | "failed";
+type CapturePendingItemStatus =
+  | "discovering_sources"
+  | "waiting_to_read"
+  | "reading_source"
+  | "waiting_to_extract"
+  | "extracting_questions"
+  | "waiting_for_classify"
+  | "waiting_for_finalize"
+  | "planning_taxonomy"
+  | "classifying_question"
+  | "classified_waiting_for_embed"
+  | "embedding_question"
+  | "embedded_waiting_for_persist"
+  | "persisting_question"
+  | "blocked_after_failure"
+  | "failed_read"
+  | "failed_extract";
 
 type CaptureJob = {
   id: string;
@@ -95,10 +112,36 @@ type CaptureEvent = {
   text: string;
 };
 
+type CapturePendingItem = {
+  id: string;
+  kind: "source" | "truth";
+  position: number;
+  title: string;
+  subtitle: string;
+  status: CapturePendingItemStatus;
+  sourceUrl: string | null;
+  sourceTitle: string | null;
+  error: string | null;
+};
+
+type CaptureActiveOperation = {
+  itemId: string | null;
+  kind: "source" | "truth" | "job";
+  status: CapturePendingItemStatus;
+  title: string;
+  subtitle: string;
+  detail: string;
+  progressCurrent: number | null;
+  progressTotal: number | null;
+  startedAt: string;
+};
+
 type CaptureJobDetail = {
   job: CaptureJob;
   sources: CaptureSource[];
   events: CaptureEvent[];
+  pendingItems: CapturePendingItem[];
+  activeOperation: CaptureActiveOperation | null;
 };
 
 const readErrorResponse = async (response: Response) => {
@@ -139,6 +182,25 @@ const captureSourceStatusLabel: Record<CaptureSourceStatus, string> = {
   extracting: "抽取中",
   completed: "已完成",
   failed: "失败",
+};
+
+const pendingItemStatusLabel: Record<CapturePendingItemStatus, string> = {
+  discovering_sources: "检索信源",
+  waiting_to_read: "待读取",
+  reading_source: "读取中",
+  waiting_to_extract: "待抽题",
+  extracting_questions: "抽题中",
+  waiting_for_classify: "等待题目绑定",
+  waiting_for_finalize: "等待入库前处理",
+  planning_taxonomy: "规划分类",
+  classifying_question: "题目绑定中",
+  classified_waiting_for_embed: "已绑定，待向量化",
+  embedding_question: "向量化中",
+  embedded_waiting_for_persist: "已向量化，待入库",
+  persisting_question: "入库中",
+  blocked_after_failure: "流程中断",
+  failed_read: "读取失败",
+  failed_extract: "抽题失败",
 };
 
 // --- Components ---
@@ -209,18 +271,41 @@ const StatItem = ({ label, value }: { label: string, value: string | number }) =
   </div>
 );
 
-const SourceItem = ({ source }: { source: CaptureSource }) => (
-  <div className="group/source flex items-center justify-between gap-4 px-4 py-2.5 rounded-[12px] hover:bg-silver/15 transition-all cursor-default border-b border-[#efeff1]/50 last:border-0 ml-0.5">
+const PendingItem = ({ item, active }: { item: CapturePendingItem; active?: boolean }) => (
+  <div className={cn(
+    "group/source flex items-center justify-between gap-4 px-4 py-2.5 rounded-[12px] transition-all cursor-default border-b border-[#efeff1]/50 last:border-0 ml-0.5",
+    active ? "bg-accent/5 border-accent/10 shadow-[0_6px_20px_rgba(var(--accent-rgb),0.08)]" : "hover:bg-silver/15",
+  )}>
     <div className="min-w-0 flex-1 space-y-0.5">
-      <div className="text-[13px] font-medium text-ink/90 truncate group-hover/source:text-accent transition-colors leading-tight font-sans">{source.title || "Untitled Intelligence"}</div>
-      <div className="text-[9px] text-steel/30 truncate tracking-tight">{source.url}</div>
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="text-[8px] font-black uppercase tracking-[0.2em] text-steel/25 whitespace-nowrap">
+          {item.kind === "source" ? "SOURCE" : "CARD"}
+        </span>
+        <div className="text-[13px] font-medium text-ink/90 truncate group-hover/source:text-accent transition-colors leading-tight font-sans">
+          {item.title || "Untitled Intelligence"}
+        </div>
+      </div>
+      <div className="text-[9px] text-steel/30 truncate tracking-tight">{item.subtitle}</div>
+      {item.error && (
+        <div className="text-[9px] text-ember/70 truncate tracking-tight">{item.error}</div>
+      )}
     </div>
     <div className="flex items-center gap-3">
+       {active && <Loader2 className="w-3 h-3 animate-spin text-accent" />}
        <span className={cn(
         "text-[8px] font-black uppercase tracking-[0.2em] whitespace-nowrap px-2 py-0.5 rounded-full border border-line/10",
-        source.status === 'completed' ? "bg-accent/5 text-accent border-accent/20" : "bg-silver/20 text-steel/40"
+        item.status === "failed_read" || item.status === "failed_extract" || item.status === "blocked_after_failure"
+          ? "bg-ember/5 text-ember border-ember/20"
+          : item.status === "reading_source" ||
+              item.status === "extracting_questions" ||
+              item.status === "classifying_question" ||
+              item.status === "embedding_question" ||
+              item.status === "persisting_question" ||
+              item.status === "planning_taxonomy"
+            ? "bg-accent/5 text-accent border-accent/20"
+            : "bg-silver/20 text-steel/40"
       )}>
-        {captureSourceStatusLabel[source.status]}
+        {pendingItemStatusLabel[item.status]}
       </span>
     </div>
   </div>
@@ -525,6 +610,49 @@ export const App = () => {
       selectedJob.discoveredSourceCount > 0 &&
       (selectedJob.status === "ready_to_read" || selectedJob.status === "failed"),
   );
+  const pendingItems = selectedCaptureJob?.pendingItems ?? [];
+  const activeOperation = selectedCaptureJob?.activeOperation ?? null;
+  const pendingStatusGroups = Array.from(
+    pendingItems.reduce((acc, item) => {
+      acc.set(item.status, (acc.get(item.status) ?? 0) + 1);
+      return acc;
+    }, new Map<CapturePendingItemStatus, number>()),
+  )
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 4);
+  const sortedPendingItems = [...pendingItems].sort((a, b) => {
+    const aCurrent = activeOperation?.itemId === a.id;
+    const bCurrent = activeOperation?.itemId === b.id;
+
+    if (aCurrent && !bCurrent) return -1;
+    if (!aCurrent && bCurrent) return 1;
+
+    const aActive = [
+      "reading_source",
+      "extracting_questions",
+      "planning_taxonomy",
+      "classifying_question",
+      "embedding_question",
+      "persisting_question",
+    ].includes(a.status);
+    const bActive = [
+      "reading_source",
+      "extracting_questions",
+      "planning_taxonomy",
+      "classifying_question",
+      "embedding_question",
+      "persisting_question",
+    ].includes(b.status);
+
+    if (aActive && !bActive) return -1;
+    if (!aActive && bActive) return 1;
+
+    return a.position - b.position;
+  });
+  const activeProgressLabel =
+    activeOperation?.progressCurrent && activeOperation?.progressTotal
+      ? `${activeOperation.progressCurrent} / ${activeOperation.progressTotal}`
+      : null;
 
   return (
     <div className="min-h-screen bg-canvas text-ink selection:bg-accent/20 selection:text-ink font-sans antialiased">
@@ -687,34 +815,80 @@ export const App = () => {
                           </div>
 
                           <div className="space-y-8">
+                             <div className="rounded-[28px] border border-accent/10 bg-[linear-gradient(135deg,rgba(var(--accent-rgb),0.08),rgba(255,255,255,0.94))] px-6 py-5 shadow-[0_18px_40px_rgba(var(--accent-rgb),0.08)]">
+                               <div className="flex flex-wrap items-start justify-between gap-5">
+                                 <div className="space-y-2 min-w-0">
+                                   <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.35em] text-accent/70">
+                                     <BrainCircuit className="w-3.5 h-3.5" />
+                                     <span>AI_NOW</span>
+                                   </div>
+                                   <div className="text-[20px] font-bold text-ink tracking-tight leading-tight">
+                                     {activeOperation ? activeOperation.detail : "当前没有正在执行的 AI 操作"}
+                                   </div>
+                                   <div className="text-[12px] text-steel/60 leading-relaxed">
+                                     {activeOperation ? activeOperation.title : "如果这里只剩本地向量化或入库，说明 AI 阶段已经跑完了。"}
+                                   </div>
+                                   {activeOperation?.subtitle && (
+                                     <div className="text-[10px] text-steel/40 tracking-tight truncate">
+                                       {activeOperation.subtitle}
+                                     </div>
+                                   )}
+                                 </div>
+
+                                 <div className="flex flex-col items-end gap-2">
+                                   {activeOperation ? (
+                                     <>
+                                       <div className="inline-flex items-center gap-2 rounded-full border border-accent/15 bg-white/80 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.25em] text-accent">
+                                         <Loader2 className="w-3 h-3 animate-spin" />
+                                         {pendingItemStatusLabel[activeOperation.status]}
+                                       </div>
+                                       {activeProgressLabel && (
+                                         <div className="text-[11px] font-bold text-ink/60">{activeProgressLabel}</div>
+                                       )}
+                                     </>
+                                   ) : (
+                                     <div className="inline-flex items-center gap-2 rounded-full border border-[#efeff1] bg-white/80 px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.25em] text-steel/50">
+                                       <span>AI_IDLE</span>
+                                     </div>
+                                   )}
+                                 </div>
+                               </div>
+                             </div>
+
                              <div className="flex items-center justify-between px-2">
                                 <h3 className="text-[10px] font-black text-steel/20 uppercase tracking-[0.5em]">Active_Action_Queue</h3>
                                 <div className="flex items-center gap-3">
-                                   <span className="text-[10px] font-bold text-ink/30 italic">{selectedCaptureJob.sources.filter(s => s.status !== 'completed').length} pending</span>
+                                   <span className="text-[10px] font-bold text-ink/30 italic">{pendingItems.length} pending</span>
                                 </div>
                              </div>
 
+                             {pendingStatusGroups.length > 0 && (
+                               <div className="flex flex-wrap gap-2 px-2">
+                                 {pendingStatusGroups.map(([status, count]) => (
+                                   <div
+                                     key={status}
+                                     className="inline-flex items-center gap-2 rounded-full border border-[#efeff1] bg-white px-3 py-1 text-[9px] font-bold text-steel/60"
+                                   >
+                                     <span>{pendingItemStatusLabel[status]}</span>
+                                     <span className="text-ink/60">{count}</span>
+                                   </div>
+                                 ))}
+                               </div>
+                             )}
+
                              <div className="relative overflow-hidden border border-[#efeff1]/50 rounded-[24px] bg-[#fcfcfc]/50 p-2">
                                <div className="space-y-px pb-20">
-                                 {selectedCaptureJob.sources.filter(s => s.status !== 'completed').length === 0 ? (
+                                 {pendingItems.length === 0 ? (
                                     <div className="py-32 text-center text-[10px] text-steel/10 font-bold uppercase tracking-[1em]">SYSTEM_STABLE</div>
                                  ) : (
-                                   selectedCaptureJob.sources
-                                      .filter(s => s.status !== 'completed')
-                                      .sort((a, b) => {
-                                        const aActive = a.status === 'reading' || a.status === 'extracting';
-                                        const bActive = b.status === 'reading' || b.status === 'extracting';
-                                        if (aActive && !bActive) return -1;
-                                        if (!aActive && bActive) return 1;
-                                        return 0;
-                                      })
+                                   sortedPendingItems
                                       .slice(0, 10)
-                                      .map((source) => (
-                                      <SourceItem key={source.id} source={source} />
+                                      .map((item) => (
+                                      <PendingItem key={item.id} item={item} active={activeOperation?.itemId === item.id} />
                                     ))
                                  )}
                                </div>
-                               {selectedCaptureJob.sources.filter(s => s.status !== 'completed').length > 10 && (
+                               {pendingItems.length > 10 && (
                                   <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-white to-transparent pointer-events-none z-10 flex items-end justify-center pb-8">
                                      <span className="text-[9px] font-black text-steel/20 tracking-[1em] uppercase">Deep_Processing</span>
                                   </div>

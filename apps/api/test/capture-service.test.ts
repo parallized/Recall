@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "bun:test";
 
+import type { TruthDraft } from "@recall/domain";
+
 import { createSqliteCaptureJobRepository } from "../src/db/capture-jobs";
 import { createSqlitePersistence } from "../src/db";
 import { PersistentCaptureJobService } from "../src/runtime/capture-service";
@@ -738,5 +740,255 @@ describe("capture-job-service", () => {
     const detail = restartedService.getJobDetail(job.job.id)!;
     expect(detail.sources[0]?.readAttemptCount).toBe(2);
     expect(detail.events.some((event) => event.label === "RECOVER" && event.text.includes("Recovered"))).toBe(true);
+  });
+
+  test("surfaces non-persisted study cards in pending and hides moderated source failures", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
+    const databasePath = join(tempDirectory, "recall.sqlite");
+    temporaryDirectories.push(tempDirectory);
+
+    const repository = createSqliteCaptureJobRepository(databasePath);
+    const knowledgeStore = createSqlitePersistence(databasePath);
+
+    const service = new PersistentCaptureJobService({
+      repository,
+      knowledgeStore,
+      providers: [],
+      sourceReader: {
+        async read() {
+          throw new Error("not used");
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [];
+        },
+      },
+      truthExtractor: {
+        async extract() {
+          return [];
+        },
+      },
+      tagClassifier: {
+        async classify() {
+          return {
+            truths: [],
+            assignments: [],
+            strippedTruthCount: 0,
+          };
+        },
+      } as any,
+      embedder: {
+        async embed() {
+          return [];
+        },
+      },
+    });
+
+    const job = repository.createJob({
+      query: "react",
+      provider: "grok-search",
+      searchLimit: 5,
+      readConcurrency: 1,
+    });
+
+    repository.replaceSources(job.id, [
+      { title: "Allowed source", url: "https://example.com/allowed", snippet: "allowed" },
+      { title: "Moderated source", url: "https://example.com/blocked", snippet: "blocked" },
+      { title: "Broken source", url: "https://example.com/broken", snippet: "broken" },
+    ]);
+
+    const [allowedSource, moderatedSource, brokenSource] = repository.listSources(job.id);
+    repository.updateSource(allowedSource!.id, {
+      status: "completed",
+      contentCached: true,
+      truthDraftCount: 1,
+      extractedAt: "2026-04-04T10:00:00.000Z",
+    });
+    repository.replaceSourceTruthDrafts(job.id, allowedSource!.url, [
+      {
+        sourceId: allowedSource!.url,
+        statement: "什么是 React 批处理更新？",
+        summary: "同一事件中的 state 更新会被合并。",
+        questionType: "open_ended",
+        answer: "同一事件中的 state 更新会被合并。",
+        explanation: "React 会批量提交同一事件中的更新。",
+        evidenceQuote: "React batches updates within one event.",
+        confidence: 0.9,
+      },
+    ]);
+    repository.updateSource(moderatedSource!.id, {
+      status: "failed",
+      contentCached: true,
+      extractAttemptCount: 3,
+      error: "Chat completion failed with status 500 (sensitive_words_detected: blocked).",
+    });
+    repository.updateSource(brokenSource!.id, {
+      status: "failed",
+      readAttemptCount: 3,
+      error: "Jina reader failed for https://example.com/broken with status 451.",
+    });
+    repository.updateJob(job.id, {
+      status: "processing",
+      phase: "classify",
+    });
+
+    const detail = service.getJobDetail(job.id)!;
+
+    expect(detail.activeOperation).toMatchObject({
+      kind: "truth",
+      status: "classifying_question",
+      title: "什么是 React 批处理更新？",
+    });
+    expect(detail.pendingItems).toEqual([
+      expect.objectContaining({
+        kind: "truth",
+        title: "什么是 React 批处理更新？",
+        subtitle: "Allowed source",
+        status: "classifying_question",
+      }),
+      expect.objectContaining({
+        kind: "source",
+        title: "Broken source",
+        status: "failed_read",
+      }),
+    ]);
+  });
+
+  test("continues to completion when classification strips moderated truths", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
+    const databasePath = join(tempDirectory, "recall.sqlite");
+    temporaryDirectories.push(tempDirectory);
+
+    const repository = createSqliteCaptureJobRepository(databasePath);
+    const knowledgeStore = createSqlitePersistence(databasePath);
+
+    const service = new PersistentCaptureJobService({
+      repository,
+      knowledgeStore,
+      providers: [
+        {
+          kind: "grok-search",
+          async search() {
+            return [
+              { title: "React Guide", url: "https://example.com/react-guide", snippet: "React snippet" },
+            ];
+          },
+        },
+      ],
+      sourceReader: {
+        async read(hit) {
+          return {
+            ...hit,
+            content: `Article body for ${hit.title}`,
+          };
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [
+            {
+              id: "frontend",
+              parentId: null,
+              level: 1,
+              name: "Frontend",
+              description: "Frontend knowledge.",
+            },
+            {
+              id: "frontend.web",
+              parentId: "frontend",
+              level: 2,
+              name: "Web",
+              description: "Browser and document work.",
+            },
+            {
+              id: "frontend.web.react",
+              parentId: "frontend.web",
+              level: 3,
+              name: "React",
+              description: "React fundamentals.",
+            },
+          ];
+        },
+      },
+      truthExtractor: {
+        async extract(input) {
+          const document = input.documents[0]!;
+
+          return [
+            {
+              sourceId: document.url,
+              statement: `${document.title} 的正常题目是什么？`,
+              summary: `${document.title} 的标准答案摘要`,
+              questionType: "open_ended",
+              answer: `${document.title} 的标准答案`,
+              explanation: `${document.title} 的展开说明`,
+              evidenceQuote: `Quote from ${document.title}`,
+              confidence: 0.91,
+            },
+            {
+              sourceId: document.url,
+              statement: `${document.title} 的敏感题目会被剥离吗？`,
+              summary: `${document.title} 的敏感答案`,
+              questionType: "open_ended",
+              answer: `${document.title} 的敏感答案`,
+              explanation: `${document.title} 的敏感解释`,
+              evidenceQuote: `Sensitive quote from ${document.title}`,
+              confidence: 0.5,
+            },
+          ];
+        },
+      },
+      tagClassifier: {
+        async classify(input: { truths: TruthDraft[] }) {
+          return {
+            truths: [input.truths[0]!],
+            assignments: [
+              {
+                level1TagId: "frontend",
+                level2TagId: "frontend.web",
+                level3TagId: "frontend.web.react",
+              },
+            ],
+            strippedTruthCount: 1,
+          };
+        },
+      } as any,
+      embedder: {
+        async embed(input: { texts: string[] }) {
+          return input.texts.map(() => [0.1, 0.2, 0.3]);
+        },
+      },
+    });
+
+    const job = await service.createJob({
+      query: "react",
+      provider: "grok-search",
+      searchLimit: 1,
+      readConcurrency: 1,
+    });
+
+    await waitFor(
+      () => repository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "ready_to_read",
+    );
+
+    await service.startProcessing({
+      jobId: job.job.id,
+      readConcurrency: 1,
+    });
+
+    const completedJob = await waitFor(
+      () => repository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "completed",
+      6000,
+    );
+
+    expect(completedJob.truthCount).toBe(1);
+    expect(knowledgeStore.listTruths()).toHaveLength(1);
+    expect(knowledgeStore.listTruths()[0]?.statement).toContain("正常题目");
+
+    const detail = service.getJobDetail(job.job.id)!;
+    expect(detail.events.some((event) => event.label === "CLASSIFY" && event.text.includes("Stripped 1 moderated"))).toBe(true);
   });
 });

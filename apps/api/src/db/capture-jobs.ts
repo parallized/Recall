@@ -513,6 +513,8 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
         job,
         sources: this.listSources(jobId),
         events: listEventsQuery.all(jobId, eventLimit).reverse().map(mapEventRow),
+        pendingItems: [],
+        activeOperation: null,
       };
     },
     listResumableJobs() {

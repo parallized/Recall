@@ -6,6 +6,24 @@ export type CaptureJobPhase = "idle" | "search" | "read" | "truths" | "taxonomy"
 export type CaptureJobStatus = "queued_search" | "searching" | "ready_to_read" | "processing" | "completed" | "failed";
 export type CaptureSourceStatus = "pending_read" | "reading" | "pending_extract" | "extracting" | "completed" | "failed";
 export type CaptureJobEventChannel = "status" | "error";
+export type CapturePendingItemKind = "source" | "truth";
+export type CapturePendingItemStatus =
+  | "discovering_sources"
+  | "waiting_to_read"
+  | "reading_source"
+  | "waiting_to_extract"
+  | "extracting_questions"
+  | "waiting_for_classify"
+  | "waiting_for_finalize"
+  | "planning_taxonomy"
+  | "classifying_question"
+  | "classified_waiting_for_embed"
+  | "embedding_question"
+  | "embedded_waiting_for_persist"
+  | "persisting_question"
+  | "blocked_after_failure"
+  | "failed_read"
+  | "failed_extract";
 
 export type CaptureJob = {
   id: string;
@@ -64,10 +82,36 @@ export type CaptureJobEvent = {
   text: string;
 };
 
+export type CapturePendingItem = {
+  id: string;
+  kind: CapturePendingItemKind;
+  position: number;
+  title: string;
+  subtitle: string;
+  status: CapturePendingItemStatus;
+  sourceUrl: string | null;
+  sourceTitle: string | null;
+  error: string | null;
+};
+
+export type CaptureActiveOperation = {
+  itemId: string | null;
+  kind: CapturePendingItemKind | "job";
+  status: CapturePendingItemStatus;
+  title: string;
+  subtitle: string;
+  detail: string;
+  progressCurrent: number | null;
+  progressTotal: number | null;
+  startedAt: string;
+};
+
 export type CaptureJobDetail = {
   job: CaptureJob;
   sources: CaptureSource[];
   events: CaptureJobEvent[];
+  pendingItems: CapturePendingItem[];
+  activeOperation: CaptureActiveOperation | null;
 };
 
 export type SourceCacheEntry = {

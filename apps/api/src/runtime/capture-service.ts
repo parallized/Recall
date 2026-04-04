@@ -1,14 +1,21 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { deduplicateTruths, type CollectedTruth, type SearchProviderKind, type TaxonomyNode, type TruthDraft } from "@recall/domain";
 
 import type { CaptureJobRepository } from "../db/capture-jobs";
 import type { KnowledgeStore } from "../db";
 import type {
+  CaptureActiveOperation,
   CaptureJob,
   CaptureJobDetail,
+  CapturePendingItem,
+  CapturePendingItemStatus,
   CaptureSource,
   CreateCaptureJobInput,
   QueuedDocument,
   StartCaptureProcessingInput,
+  StoredTruthDraft,
 } from "./capture-types";
 import type {
   EmbeddingService,
@@ -18,7 +25,7 @@ import type {
   TaxonomyPlanner,
   TruthExtractor,
 } from "./types";
-import type { HybridHierarchicalTagClassifier } from "./pipeline";
+import { normalizeTruthClassificationResult, type HybridHierarchicalTagClassifier } from "./pipeline";
 import { buildStudySearchQuery } from "./search";
 
 type CaptureJobServiceDependencies = {
@@ -154,11 +161,135 @@ const describeStudyCard = (truth: Pick<TruthDraft, "statement" | "summary" | "an
   ]
     .filter(Boolean)
     .join("\n");
+const truthIdentityKey = (truth: Pick<TruthDraft, "sourceId" | "statement" | "evidenceQuote">) =>
+  `${truth.sourceId}::${truth.statement}::${truth.evidenceQuote}`;
+const sensitiveWordsMarker = "sensitive_words_detected";
+const logDirectoryPattern = /See logs at (.+?)(?:\.\s*|$)/i;
 
 const defaultRetryPolicy: CaptureJobRetryPolicy = {
   maxReadAttempts: 3,
   maxExtractAttempts: 3,
   baseDelayMs: 3_000,
+};
+
+const extractLogDirectoryFromMessage = (message: string | null) => {
+  if (!message) {
+    return null;
+  }
+
+  const match = message.match(logDirectoryPattern);
+  return match?.[1] ?? null;
+};
+
+const readLoggedOutput = (directory: string | null) => {
+  if (!directory) {
+    return null;
+  }
+
+  const outputPath = join(directory, "output.txt");
+
+  if (!existsSync(outputPath)) {
+    return null;
+  }
+
+  try {
+    return readFileSync(outputPath, "utf8");
+  } catch {
+    return null;
+  }
+};
+
+const readLoggedInput = (directory: string | null) => {
+  if (!directory) {
+    return null;
+  }
+
+  const inputPath = join(directory, "input.json");
+
+  if (!existsSync(inputPath)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(readFileSync(inputPath, "utf8")) as {
+      schemaName?: string;
+      request?: {
+        messages?: Array<{
+          role?: string;
+          content?: string;
+        }>;
+      };
+    };
+  } catch {
+    return null;
+  }
+};
+
+const extractFailedTruthStatementFromMessage = (message: string | null) => {
+  const input = readLoggedInput(extractLogDirectoryFromMessage(message));
+  const content = input?.request?.messages?.find((entry) => entry.role === "user")?.content;
+
+  if (!content) {
+    return null;
+  }
+
+  const match = content.match(/Question stem:\s*([\s\S]*?)\n\nShort answer:/);
+  return match?.[1]?.trim() ?? null;
+};
+
+const isSensitiveFailureMessage = (message: string | null) => {
+  if (!message) {
+    return false;
+  }
+
+  const lowered = message.toLowerCase();
+
+  if (lowered.includes(sensitiveWordsMarker)) {
+    return true;
+  }
+
+  const output = readLoggedOutput(extractLogDirectoryFromMessage(message));
+  return output?.toLowerCase().includes(sensitiveWordsMarker) ?? false;
+};
+
+const sourcePendingStatus = (source: CaptureSource): CapturePendingItemStatus | null => {
+  switch (source.status) {
+    case "pending_read":
+      return "waiting_to_read";
+    case "reading":
+      return "reading_source";
+    case "pending_extract":
+      return "waiting_to_extract";
+    case "extracting":
+      return "extracting_questions";
+    case "failed":
+      return source.contentCached ? "failed_extract" : "failed_read";
+    case "completed":
+      return null;
+  }
+};
+
+const truthPendingStatus = (job: CaptureJob): CapturePendingItemStatus => {
+  if (job.status === "failed") {
+    return "blocked_after_failure";
+  }
+
+  switch (job.phase) {
+    case "taxonomy":
+      return "waiting_for_classify";
+    case "classify":
+      return "waiting_for_classify";
+    case "embed":
+      return "classified_waiting_for_embed";
+    case "persist":
+      return "embedded_waiting_for_persist";
+    case "idle":
+    case "search":
+    case "read":
+    case "truths":
+    default:
+      return "waiting_for_finalize";
+  }
 };
 
 const runWithConcurrency = async <T>(
@@ -197,6 +328,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
   private readonly runningJobs = new Map<string, Promise<void>>();
   private readonly extractionMutex = new AsyncMutex();
   private readonly retryPolicy: CaptureJobRetryPolicy;
+  private readonly activeOperations = new Map<string, CaptureActiveOperation>();
 
   constructor(private readonly options: CaptureJobServiceDependencies) {
     this.retryPolicy = {
@@ -210,7 +342,17 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   getJobDetail(jobId: string) {
-    return this.options.repository.getJobDetail(jobId);
+    const detail = this.options.repository.getJobDetail(jobId);
+
+    if (!detail) {
+      return null;
+    }
+
+    return {
+      ...detail,
+      pendingItems: this.buildPendingItems(detail.job, detail.sources),
+      activeOperation: this.buildActiveOperation(detail.job, detail.sources),
+    };
   }
 
   async createJob(input: CreateCaptureJobInput) {
@@ -267,13 +409,248 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private getRequiredDetail(jobId: string) {
-    const detail = this.options.repository.getJobDetail(jobId);
+    const detail = this.getJobDetail(jobId);
 
     if (!detail) {
       throw new Error(`Capture job not found: ${jobId}`);
     }
 
     return detail;
+  }
+
+  private setActiveOperation(jobId: string, operation: CaptureActiveOperation | null) {
+    if (operation) {
+      this.activeOperations.set(jobId, operation);
+      return;
+    }
+
+    this.activeOperations.delete(jobId);
+  }
+
+  private buildActiveOperation(job: CaptureJob, sources: CaptureSource[]) {
+    const active = this.activeOperations.get(job.id);
+
+    if (active) {
+      return active;
+    }
+
+    const sourceByUrl = new Map(sources.map((source) => [source.url, source]));
+    const drafts = deduplicateTruths(this.options.repository.listTruthDrafts(job.id)) as StoredTruthDraft[];
+
+    if (job.status === "queued_search" || job.status === "searching") {
+      return {
+        itemId: null,
+        kind: "job",
+        status: "discovering_sources",
+        title: job.query,
+        subtitle: job.provider,
+        detail: `正在从 ${job.provider} 检索信源`,
+        progressCurrent: null,
+        progressTotal: null,
+        startedAt: job.updatedAt,
+      } satisfies CaptureActiveOperation;
+    }
+
+    const extractingSource = sources.find((source) => source.status === "extracting");
+
+    if (extractingSource) {
+      return {
+        itemId: extractingSource.id,
+        kind: "source",
+        status: "extracting_questions",
+        title: extractingSource.title || extractingSource.url,
+        subtitle: extractingSource.url,
+        detail: "AI 正在从这个信源抽取题目卡片",
+        progressCurrent: null,
+        progressTotal: null,
+        startedAt: extractingSource.lastExtractAttemptAt ?? job.updatedAt,
+      } satisfies CaptureActiveOperation;
+    }
+
+    if (job.status === "processing" && job.phase === "taxonomy") {
+      return {
+        itemId: null,
+        kind: "job",
+        status: "planning_taxonomy",
+        title: job.query,
+        subtitle: `${job.truthDraftCount} 张待处理卡片`,
+        detail: "AI 正在规划这一批题目的分类树",
+        progressCurrent: null,
+        progressTotal: null,
+        startedAt: job.updatedAt,
+      } satisfies CaptureActiveOperation;
+    }
+
+    if (job.status === "processing" && job.phase === "classify" && drafts.length > 0) {
+      const draft = drafts[0]!;
+      const source = sourceByUrl.get(draft.sourceId);
+
+      return {
+        itemId: draft.id,
+        kind: "truth",
+        status: "classifying_question",
+        title: draft.statement,
+        subtitle: source?.title ?? draft.sourceId,
+        detail: "AI 正在为这张卡片挑选最终分类路径",
+        progressCurrent: null,
+        progressTotal: drafts.length,
+        startedAt: job.updatedAt,
+      } satisfies CaptureActiveOperation;
+    }
+
+    if (job.status === "failed" && job.phase === "classify" && drafts.length > 0) {
+      const failedStatement = extractFailedTruthStatementFromMessage(job.lastError);
+      const failedDraft = drafts.find((draft) => draft.statement === failedStatement) ?? drafts[0]!;
+      const source = sourceByUrl.get(failedDraft.sourceId);
+
+      return {
+        itemId: failedDraft.id,
+        kind: "truth",
+        status: "blocked_after_failure",
+        title: failedDraft.statement,
+        subtitle: source?.title ?? failedDraft.sourceId,
+        detail: "上一条 AI 绑定请求在这张卡片上失败，当前队列已暂停。",
+        progressCurrent: null,
+        progressTotal: drafts.length,
+        startedAt: job.updatedAt,
+      } satisfies CaptureActiveOperation;
+    }
+
+    if (job.status === "processing" && job.phase === "embed") {
+      return {
+        itemId: null,
+        kind: "job",
+        status: "embedding_question",
+        title: job.query,
+        subtitle: `${job.truthDraftCount} 张卡片`,
+        detail: "AI 已完成，正在做本地向量化",
+        progressCurrent: null,
+        progressTotal: null,
+        startedAt: job.updatedAt,
+      } satisfies CaptureActiveOperation;
+    }
+
+    if (job.status === "processing" && job.phase === "persist") {
+      return {
+        itemId: null,
+        kind: "job",
+        status: "persisting_question",
+        title: job.query,
+        subtitle: `${job.truthDraftCount} 张卡片`,
+        detail: "正在把这批题目正式写入 repository",
+        progressCurrent: null,
+        progressTotal: null,
+        startedAt: job.updatedAt,
+      } satisfies CaptureActiveOperation;
+    }
+
+    return null;
+  }
+
+  private buildPendingItems(job: CaptureJob, sources: CaptureSource[]): CapturePendingItem[] {
+    const pendingItems: CapturePendingItem[] = [];
+
+    if (job.status === "queued_search" || job.status === "searching") {
+      pendingItems.push({
+        id: `${job.id}:discovering`,
+        kind: "source",
+        position: -1,
+        title: job.query,
+        subtitle: "正在检索可读信源",
+        status: "discovering_sources",
+        sourceUrl: null,
+        sourceTitle: null,
+        error: null,
+      });
+    }
+
+    const sourceByUrl = new Map(sources.map((source) => [source.url, source]));
+    const activeOperation = this.buildActiveOperation(job, sources);
+
+    for (const source of sources) {
+      if (source.status === "failed" && isSensitiveFailureMessage(source.error)) {
+        continue;
+      }
+
+      const status = sourcePendingStatus(source);
+
+      if (!status) {
+        continue;
+      }
+
+      pendingItems.push({
+        id: source.id,
+        kind: "source",
+        position: source.position,
+        title: source.title || source.url,
+        subtitle: source.url,
+        status,
+        sourceUrl: source.url,
+        sourceTitle: source.title,
+        error: source.error,
+      });
+    }
+
+    if (job.collectionId) {
+      return pendingItems;
+    }
+
+    const drafts = deduplicateTruths(this.options.repository.listTruthDrafts(job.id)) as StoredTruthDraft[];
+    const draftStatus = truthPendingStatus(job);
+
+    drafts.forEach((draft, index) => {
+      const source = sourceByUrl.get(draft.sourceId);
+      const sourcePosition = source?.position ?? 10_000;
+      const isActiveTruth =
+        activeOperation?.kind === "truth" &&
+        activeOperation.itemId === draft.id &&
+        activeOperation.status === "classifying_question";
+      let status = draftStatus;
+
+      if (job.phase === "taxonomy" && job.status === "processing") {
+        status = "waiting_for_classify";
+      }
+
+      if (job.phase === "classify" && job.status === "processing") {
+        if (activeOperation?.kind === "truth" && activeOperation.status === "classifying_question") {
+          if (isActiveTruth) {
+            status = "classifying_question";
+          } else if (
+            activeOperation.progressCurrent &&
+            activeOperation.progressTotal &&
+            index < activeOperation.progressCurrent - 1
+          ) {
+            status = "classified_waiting_for_embed";
+          } else {
+            status = "waiting_for_classify";
+          }
+        } else {
+          status = "waiting_for_classify";
+        }
+      }
+
+      if (job.phase === "embed" && job.status === "processing") {
+        status = "classified_waiting_for_embed";
+      }
+
+      if (job.phase === "persist" && job.status === "processing") {
+        status = "embedded_waiting_for_persist";
+      }
+
+      pendingItems.push({
+        id: draft.id,
+        kind: "truth",
+        position: sourcePosition * 1_000 + index,
+        title: draft.statement,
+        subtitle: source?.title || draft.sourceId,
+        status,
+        sourceUrl: draft.sourceId,
+        sourceTitle: source?.title ?? null,
+        error: job.status === "failed" && activeOperation?.itemId === draft.id ? job.lastError : null,
+      });
+    });
+
+    return pendingItems.sort((left, right) => left.position - right.position);
   }
 
   private appendStatus(jobId: string, label: string, text: string) {
@@ -422,6 +799,17 @@ export class PersistentCaptureJobService implements CaptureJobService {
         finishedAt: null,
       });
       this.appendStatus(jobId, "SEARCH", `Searching ${job.provider} for up to ${job.searchLimit} source URLs.`);
+      this.setActiveOperation(jobId, {
+        itemId: null,
+        kind: "job",
+        status: "discovering_sources",
+        title: job.query,
+        subtitle: job.provider,
+        detail: `正在从 ${job.provider} 检索最多 ${job.searchLimit} 个信源`,
+        progressCurrent: null,
+        progressTotal: null,
+        startedAt: new Date().toISOString(),
+      });
 
       const provider = this.resolveProvider(job.provider);
       const searchHits = dedupeHits(
@@ -457,6 +845,8 @@ export class PersistentCaptureJobService implements CaptureJobService {
         finishedAt: new Date().toISOString(),
       });
       this.appendError(jobId, "SEARCH", message);
+    } finally {
+      this.setActiveOperation(jobId, null);
     }
   }
 
@@ -489,6 +879,16 @@ export class PersistentCaptureJobService implements CaptureJobService {
     } catch (error) {
       const message = toErrorMessage(error);
       const job = this.options.repository.getJob(jobId);
+      const activeOperation = this.activeOperations.get(jobId);
+
+      if (activeOperation) {
+        this.setActiveOperation(jobId, {
+          ...activeOperation,
+          status: "blocked_after_failure",
+          detail: "上一条 AI 操作在这里失败，当前队列已暂停。",
+        });
+      }
+
       this.options.repository.updateJob(jobId, {
         status: "failed",
         phase: job?.phase ?? "read",
@@ -725,6 +1125,17 @@ export class PersistentCaptureJobService implements CaptureJobService {
           error: null,
         });
         this.appendStatus(jobId, "QUESTION", `Extracting study questions from ${source.title}.`);
+        this.setActiveOperation(jobId, {
+          itemId: source.id,
+          kind: "source",
+          status: "extracting_questions",
+          title: source.title || source.url,
+          subtitle: source.url,
+          detail: "AI 正在从这个信源抽取题目卡片",
+          progressCurrent: null,
+          progressTotal: null,
+          startedAt,
+        });
 
         try {
           const drafts = await this.options.truthExtractor.extract({
@@ -751,6 +1162,8 @@ export class PersistentCaptureJobService implements CaptureJobService {
             attemptCount: source.extractAttemptCount,
             error: message,
           });
+        } finally {
+          this.setActiveOperation(jobId, null);
         }
       });
     }
@@ -758,19 +1171,20 @@ export class PersistentCaptureJobService implements CaptureJobService {
 
   private async finalizeCollection(jobId: string, reporter: ProgressReporter) {
     const job = this.requireJob(jobId);
-    const drafts = deduplicateTruths(
-      this.options.repository.listTruthDrafts(jobId).map((draft) => ({
-        sourceId: draft.sourceId,
-        statement: draft.statement,
-        summary: draft.summary,
-        questionType: draft.questionType,
-        options: draft.options,
-        answer: draft.answer,
-        explanation: draft.explanation,
-        evidenceQuote: draft.evidenceQuote,
-        confidence: draft.confidence,
-      })),
-    );
+    const storedDrafts = deduplicateTruths(this.options.repository.listTruthDrafts(jobId)) as StoredTruthDraft[];
+    const drafts = storedDrafts.map((draft) => ({
+      sourceId: draft.sourceId,
+      statement: draft.statement,
+      summary: draft.summary,
+      questionType: draft.questionType,
+      options: draft.options,
+      answer: draft.answer,
+      explanation: draft.explanation,
+      evidenceQuote: draft.evidenceQuote,
+      confidence: draft.confidence,
+    }));
+    const sourceByUrl = new Map(this.options.repository.listSources(jobId).map((source) => [source.url, source]));
+    const draftIdByTruthKey = new Map(storedDrafts.map((draft) => [truthIdentityKey(draft), draft.id]));
 
     if (drafts.length === 0) {
       throw new Error("No study-question drafts were extracted from cached sources.");
@@ -780,6 +1194,17 @@ export class PersistentCaptureJobService implements CaptureJobService {
       phase: "taxonomy",
     });
     this.appendStatus(jobId, "TAXONOMY", "Planning taxonomy from extracted study questions.");
+    this.setActiveOperation(jobId, {
+      itemId: null,
+      kind: "job",
+      status: "planning_taxonomy",
+      title: job.query,
+      subtitle: `${drafts.length} 张待分类卡片`,
+      detail: "AI 正在规划这批题目的分类树",
+      progressCurrent: null,
+      progressTotal: null,
+      startedAt: new Date().toISOString(),
+    });
 
     const existingTaxonomy = this.options.knowledgeStore.getTaxonomy();
     const plannedTaxonomy = await this.options.taxonomyPlanner.plan({
@@ -793,26 +1218,78 @@ export class PersistentCaptureJobService implements CaptureJobService {
       phase: "classify",
     });
     this.appendStatus(jobId, "CLASSIFY", `Classifying ${drafts.length} study questions into taxonomy paths.`);
-    const tagAssignments = await this.options.tagClassifier.classify({
-      truths: drafts,
-      taxonomy,
-      reporter,
-    });
+    const classification = normalizeTruthClassificationResult(
+      drafts,
+      await this.options.tagClassifier.classify({
+        truths: drafts,
+        taxonomy,
+        reporter,
+        onTruthStart: async ({ truth, index, total }) => {
+          const source = sourceByUrl.get(truth.sourceId);
+          const itemId = draftIdByTruthKey.get(truthIdentityKey(truth)) ?? null;
+          this.setActiveOperation(jobId, {
+            itemId,
+            kind: "truth",
+            status: "classifying_question",
+            title: truth.statement,
+            subtitle: source?.title ?? truth.sourceId,
+            detail: "AI 正在为这张卡片挑选最终分类路径",
+            progressCurrent: index + 1,
+            progressTotal: total,
+            startedAt: new Date().toISOString(),
+          });
+        },
+      }),
+    );
+
+    if (classification.truths.length === 0) {
+      throw new Error("All study-question drafts were stripped during taxonomy classification.");
+    }
+
+    if (classification.strippedTruthCount > 0) {
+      this.appendStatus(
+        jobId,
+        "CLASSIFY",
+        `Stripped ${classification.strippedTruthCount} moderated study questions during taxonomy binding.`,
+      );
+    }
 
     this.options.repository.updateJob(jobId, {
       phase: "embed",
     });
-    this.appendStatus(jobId, "EMBED", `Embedding ${drafts.length} study questions for semantic search.`);
+    this.appendStatus(jobId, "EMBED", `Embedding ${classification.truths.length} study questions for semantic search.`);
+    this.setActiveOperation(jobId, {
+      itemId: null,
+      kind: "job",
+      status: "embedding_question",
+      title: job.query,
+      subtitle: `${classification.truths.length} 张已分类卡片`,
+      detail: "AI 已完成，正在做本地向量化",
+      progressCurrent: null,
+      progressTotal: null,
+      startedAt: new Date().toISOString(),
+    });
     const embeddings = await this.options.embedder.embed({
-      texts: drafts.map(describeStudyCard),
+      texts: classification.truths.map(describeStudyCard),
     });
 
     this.options.repository.updateJob(jobId, {
       phase: "persist",
     });
     this.appendStatus(jobId, "PERSIST", "Saving study questions into the knowledge store.");
+    this.setActiveOperation(jobId, {
+      itemId: null,
+      kind: "job",
+      status: "persisting_question",
+      title: job.query,
+      subtitle: `${classification.truths.length} 张卡片准备入库`,
+      detail: "正在把这批题目正式写入 repository",
+      progressCurrent: null,
+      progressTotal: null,
+      startedAt: new Date().toISOString(),
+    });
 
-    const truths: CollectedTruth[] = drafts.map((truth, index) => ({
+    const truths: CollectedTruth[] = classification.truths.map((truth, index) => ({
       id: crypto.randomUUID(),
       statement: truth.statement,
       summary: truth.summary,
@@ -823,9 +1300,9 @@ export class PersistentCaptureJobService implements CaptureJobService {
       evidenceQuote: truth.evidenceQuote,
       confidence: truth.confidence,
       sourceUrl: truth.sourceId,
-      level1TagId: tagAssignments[index]!.level1TagId,
-      level2TagId: tagAssignments[index]!.level2TagId,
-      level3TagId: tagAssignments[index]!.level3TagId,
+      level1TagId: classification.assignments[index]!.level1TagId,
+      level2TagId: classification.assignments[index]!.level2TagId,
+      level3TagId: classification.assignments[index]!.level3TagId,
       embedding: embeddings[index],
     }));
 
@@ -853,6 +1330,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       "DONE",
       `Saved ${saved.truthCount} study questions from ${saved.sourceCount} sources into collection ${saved.collectionId}.`,
     );
+    this.setActiveOperation(jobId, null);
   }
 
   private requireJob(jobId: string) {

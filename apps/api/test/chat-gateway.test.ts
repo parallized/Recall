@@ -179,12 +179,54 @@ describe("chat-gateway", () => {
         system: "Return JSON.",
         user: "Return JSON.",
       }),
-    ).rejects.toThrow(/Chat completion stream returned error: AppChatReverse: Chat failed, 403/);
+    ).rejects.toThrow(/Chat completion stream returned error \(upstream_error\): AppChatReverse: Chat failed, 403/);
 
     const [logDirectory] = await readdir(logsRoot);
     const outputFile = await readFile(join(logsRoot, logDirectory, "output.txt"), "utf8");
 
     expect(outputFile).toContain("AppChatReverse: Chat failed, 403");
+    expect(outputFile).toContain('"status": "error"');
+  });
+
+  test("includes upstream moderation codes for HTTP failures", async () => {
+    console.log = mock(() => {});
+    const logsRoot = await mkdtemp(join(tmpdir(), "recall-chat-gateway-"));
+    temporaryDirectories.push(logsRoot);
+
+    globalThis.fetch = mock(async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "sensitive_words_detected (request id: 123)",
+            code: "sensitive_words_detected",
+          },
+        }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    ) as unknown as typeof fetch;
+
+    const gateway = new OpenAiCompatibleJsonGateway({
+      baseUrl: "https://ai.huan666.de/v1",
+      apiKey: "test-key",
+      model: "grok-4.20-beta",
+      logsRoot,
+    });
+
+    await expect(
+      gateway.generateJson({
+        schemaName: "truth_list",
+        system: "Return JSON.",
+        user: "Return JSON.",
+      }),
+    ).rejects.toThrow(/sensitive_words_detected/);
+
+    const [logDirectory] = await readdir(logsRoot);
+    const outputFile = await readFile(join(logsRoot, logDirectory, "output.txt"), "utf8");
+
+    expect(outputFile).toContain("sensitive_words_detected");
     expect(outputFile).toContain('"status": "error"');
   });
 });

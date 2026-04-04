@@ -60,6 +60,12 @@ type KnowledgeTaxonomyStore = {
   getTaxonomy(): TaxonomyNode[];
 };
 
+export type TruthClassificationResult = {
+  truths: TruthDraft[];
+  assignments: Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">>;
+  strippedTruthCount: number;
+};
+
 const toNodeId = (parentId: string | null, name: string) => {
   const slug = name
     .trim()
@@ -102,6 +108,25 @@ const mergeTaxonomy = (existingNodes: TaxonomyNode[], plannedNodes: TaxonomyNode
 
   return [...mergedById.values()];
 };
+
+const isSensitiveWordsError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.toLowerCase().includes("sensitive_words_detected");
+};
+
+export const normalizeTruthClassificationResult = (
+  truths: TruthDraft[],
+  result:
+    | TruthClassificationResult
+    | Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">>,
+): TruthClassificationResult =>
+  Array.isArray(result)
+    ? {
+        truths,
+        assignments: result,
+        strippedTruthCount: 0,
+      }
+    : result;
 
 export class AiTaxonomyPlanner implements TaxonomyPlanner {
   constructor(private readonly gateway: ChatJsonGateway) {}
@@ -173,34 +198,44 @@ export class AiTruthExtractor implements TruthExtractor {
     const drafts: TruthDraft[] = [];
 
     for (const document of chunkDocuments(input.documents)) {
-      const payload = await this.gateway.generateJson<ExtractedTruthPayload>({
-        schemaName: "truth_list",
-        system: [
-          "You convert source material into interview-style study questions for deliberate memorization systems.",
-          "Each item must be a standalone question-answer card that helps a learner practice recall.",
-          "Prefer question-bank style prompts when the source already contains questions; otherwise synthesize high-quality questions from the source.",
-          "Every card must stay directly grounded in the supplied source text.",
-          "statement = the question stem shown to the learner.",
-          "summary = a short standard answer for quick review.",
-          "questionType must be either multiple_choice or open_ended.",
-          "For multiple_choice, provide 3-5 plausible options and set answer to the exact correct option text.",
-          "For open_ended, omit options and set answer to the canonical answer.",
-          "explanation should explain why the answer is correct or what key points must be recalled.",
-          "Confidence must be between 0 and 1.",
-        ].join("\n"),
-        user: [
-          `Topic query: ${input.query}`,
-          `Source title: ${document.title}`,
-          `Source URL: ${document.url}`,
-          `Source snippet: ${document.snippet}`,
-          "Return JSON with the shape {\"truths\":[{\"statement\":\"\",\"summary\":\"\",\"questionType\":\"open_ended\",\"options\":[],\"answer\":\"\",\"explanation\":\"\",\"evidenceQuote\":\"\",\"confidence\":0.0}]}",
-          "Extract 4 to 8 high-value study questions. Questions should resemble computer interview prep, quiz practice, or deliberate recall prompts.",
-          "If the source is not already a question bank, derive questions from the densest, most testable concepts in the source.",
-          "Quotes must be copied from the source text exactly as evidence.",
-          `Source text:\n${document.content}`,
-        ].join("\n\n"),
-        reporter: input.reporter,
-      });
+      let payload: ExtractedTruthPayload;
+
+      try {
+        payload = await this.gateway.generateJson<ExtractedTruthPayload>({
+          schemaName: "truth_list",
+          system: [
+            "You convert source material into interview-style study questions for deliberate memorization systems.",
+            "Each item must be a standalone question-answer card that helps a learner practice recall.",
+            "Prefer question-bank style prompts when the source already contains questions; otherwise synthesize high-quality questions from the source.",
+            "Every card must stay directly grounded in the supplied source text.",
+            "statement = the question stem shown to the learner.",
+            "summary = a short standard answer for quick review.",
+            "questionType must be either multiple_choice or open_ended.",
+            "For multiple_choice, provide 3-5 plausible options and set answer to the exact correct option text.",
+            "For open_ended, omit options and set answer to the canonical answer.",
+            "explanation should explain why the answer is correct or what key points must be recalled.",
+            "Confidence must be between 0 and 1.",
+          ].join("\n"),
+          user: [
+            `Topic query: ${input.query}`,
+            `Source title: ${document.title}`,
+            `Source URL: ${document.url}`,
+            `Source snippet: ${document.snippet}`,
+            "Return JSON with the shape {\"truths\":[{\"statement\":\"\",\"summary\":\"\",\"questionType\":\"open_ended\",\"options\":[],\"answer\":\"\",\"explanation\":\"\",\"evidenceQuote\":\"\",\"confidence\":0.0}]}",
+            "Extract 4 to 8 high-value study questions. Questions should resemble computer interview prep, quiz practice, or deliberate recall prompts.",
+            "If the source is not already a question bank, derive questions from the densest, most testable concepts in the source.",
+            "Quotes must be copied from the source text exactly as evidence.",
+            `Source text:\n${document.content}`,
+          ].join("\n\n"),
+          reporter: input.reporter,
+        });
+      } catch (error) {
+        if (isSensitiveWordsError(error)) {
+          continue;
+        }
+
+        throw error;
+      }
 
       for (const truth of payload.truths) {
         drafts.push({
@@ -277,7 +312,8 @@ export class HybridHierarchicalTagClassifier {
     truths: TruthDraft[];
     taxonomy: TaxonomyNode[];
     reporter?: ProgressReporter;
-  }): Promise<Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">>> {
+    onTruthStart?: (input: { truth: TruthDraft; index: number; total: number }) => void | Promise<void>;
+  }): Promise<TruthClassificationResult> {
     const nodeEmbeddings = await this.options.embedder.embed({
       texts: input.taxonomy.map(nodeDescriptor),
     });
@@ -285,9 +321,16 @@ export class HybridHierarchicalTagClassifier {
       texts: input.truths.map(truthDescriptor),
     });
 
+    const classifiedTruths: TruthDraft[] = [];
     const classifications: Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">> = [];
 
     for (const [truthIndex, truth] of input.truths.entries()) {
+      await input.onTruthStart?.({
+        truth,
+        index: truthIndex,
+        total: input.truths.length,
+      });
+
       const candidateScores: TagAssignmentCandidate[] = input.taxonomy.map((node, nodeIndex) => ({
         nodeId: node.id,
         score: Math.max(cosineSimilarity(truthEmbeddings[truthIndex]!, nodeEmbeddings[nodeIndex]!), 0),
@@ -295,29 +338,39 @@ export class HybridHierarchicalTagClassifier {
 
       const topPaths = buildCandidatePaths(input.taxonomy, candidateScores).slice(0, 5);
 
-      const reranked = await this.options.gateway.generateJson<RerankedPath>({
-        schemaName: "reranked_tag_path",
-        system: [
-          "You rerank candidate taxonomy paths for question-answer study cards.",
-          "Choose exactly one path from the supplied candidates.",
-          "The chosen path must be semantically precise and useful for memorizing interview-style questions.",
-        ].join("\n"),
-        user: [
-          `Question stem: ${truth.statement}`,
-          `Short answer: ${truth.summary}`,
-          `Canonical answer: ${truth.answer ?? truth.summary}`,
-          `Explanation: ${truth.explanation ?? ""}`,
-          `Evidence: ${truth.evidenceQuote}`,
-          "Return JSON with keys level1Id, level2Id, level3Id, reason.",
-          `Candidate paths:\n${topPaths
-            .map(
-              (path) =>
-                `- ${path.label} | ids=${path.level1Id},${path.level2Id},${path.level3Id} | score=${path.score.toFixed(4)}\n${path.description}`,
-            )
-            .join("\n\n")}`,
-        ].join("\n\n"),
-        reporter: input.reporter,
-      });
+      let reranked: RerankedPath;
+
+      try {
+        reranked = await this.options.gateway.generateJson<RerankedPath>({
+          schemaName: "reranked_tag_path",
+          system: [
+            "You rerank candidate taxonomy paths for question-answer study cards.",
+            "Choose exactly one path from the supplied candidates.",
+            "The chosen path must be semantically precise and useful for memorizing interview-style questions.",
+          ].join("\n"),
+          user: [
+            `Question stem: ${truth.statement}`,
+            `Short answer: ${truth.summary}`,
+            `Canonical answer: ${truth.answer ?? truth.summary}`,
+            `Explanation: ${truth.explanation ?? ""}`,
+            `Evidence: ${truth.evidenceQuote}`,
+            "Return JSON with keys level1Id, level2Id, level3Id, reason.",
+            `Candidate paths:\n${topPaths
+              .map(
+                (path) =>
+                  `- ${path.label} | ids=${path.level1Id},${path.level2Id},${path.level3Id} | score=${path.score.toFixed(4)}\n${path.description}`,
+              )
+              .join("\n\n")}`,
+          ].join("\n\n"),
+          reporter: input.reporter,
+        });
+      } catch (error) {
+        if (isSensitiveWordsError(error)) {
+          continue;
+        }
+
+        throw error;
+      }
 
       const matchedCandidate = topPaths.find(
         (path) =>
@@ -330,6 +383,7 @@ export class HybridHierarchicalTagClassifier {
         throw new Error("LLM reranker returned a taxonomy path outside the provided candidate set.");
       }
 
+      classifiedTruths.push(truth);
       classifications.push({
         level1TagId: matchedCandidate.level1Id,
         level2TagId: matchedCandidate.level2Id,
@@ -337,7 +391,11 @@ export class HybridHierarchicalTagClassifier {
       });
     }
 
-    return classifications;
+    return {
+      truths: classifiedTruths,
+      assignments: classifications,
+      strippedTruthCount: input.truths.length - classifiedTruths.length,
+    };
   }
 }
 
@@ -465,18 +523,27 @@ export class KnowledgeCollectionOrchestrator {
       status: "start",
       message: "Binding each study question to one taxonomy path.",
     });
-    const tagAssignments = await this.options.tagClassifier.classify({
-      truths: truthDrafts,
-      taxonomy,
-      reporter: input.reporter,
-    });
+    const classification = normalizeTruthClassificationResult(
+      truthDrafts,
+      await this.options.tagClassifier.classify({
+        truths: truthDrafts,
+        taxonomy,
+        reporter: input.reporter,
+      }),
+    );
+    const classifiedTruths = classification.truths;
+    const tagAssignments = classification.assignments;
     await input.reporter?.({
       type: "phase",
       phase: "classify",
       status: "complete",
-      message: `Classified ${tagAssignments.length} question assignments.`,
+      message: `Classified ${tagAssignments.length} question assignments.${classification.strippedTruthCount > 0 ? ` Stripped ${classification.strippedTruthCount} moderated items.` : ""}`,
       count: tagAssignments.length,
     });
+
+    if (classifiedTruths.length === 0) {
+      throw new Error("All study questions were stripped during taxonomy classification.");
+    }
 
     await input.reporter?.({
       type: "phase",
@@ -485,7 +552,7 @@ export class KnowledgeCollectionOrchestrator {
       message: "Embedding study questions for semantic search and recall.",
     });
     const embeddings = await this.options.embedder.embed({
-      texts: truthDrafts.map(truthDescriptor),
+      texts: classifiedTruths.map(truthDescriptor),
     });
     await input.reporter?.({
       type: "phase",
@@ -495,7 +562,7 @@ export class KnowledgeCollectionOrchestrator {
       count: embeddings.length,
     });
 
-    const truths: CollectedTruth[] = truthDrafts.map((truth, index) => ({
+    const truths: CollectedTruth[] = classifiedTruths.map((truth, index) => ({
       id: crypto.randomUUID(),
       statement: truth.statement,
       summary: truth.summary,

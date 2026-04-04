@@ -119,6 +119,35 @@ const normalizeUsage = (usage?: {
   totalTokens: usage?.total_tokens ?? 0,
 });
 
+const describeHttpFailure = (status: number, rawOutput: string) => {
+  try {
+    const payload = JSON.parse(rawOutput) as {
+      error?: {
+        message?: string;
+        code?: string;
+      };
+    };
+    const code = payload.error?.code?.trim();
+    const message = payload.error?.message?.trim();
+
+    if (code && message && !message.toLowerCase().includes(code.toLowerCase())) {
+      return `Chat completion failed with status ${status} (${code}: ${message}).`;
+    }
+
+    if (message) {
+      return `Chat completion failed with status ${status} (${message}).`;
+    }
+
+    if (code) {
+      return `Chat completion failed with status ${status} (${code}).`;
+    }
+  } catch {
+    // Fall back to the generic message when the upstream body is not JSON.
+  }
+
+  return `Chat completion failed with status ${status}.`;
+};
+
 export class OpenAiCompatibleJsonGateway implements ChatJsonGateway {
   constructor(
     private readonly options: {
@@ -189,7 +218,7 @@ export class OpenAiCompatibleJsonGateway implements ChatJsonGateway {
 
       if (!response.ok) {
         rawOutput = await response.text();
-        throw new Error(`Chat completion failed with status ${response.status}.`);
+        throw new Error(describeHttpFailure(response.status, rawOutput));
       }
 
       if (!response.body) {
@@ -245,7 +274,7 @@ export class OpenAiCompatibleJsonGateway implements ChatJsonGateway {
             rawOutput = rawOutput.length > 0 ? `${rawOutput}\n${event}` : event;
             throw new Error(
               payload.error.message
-                ? `Chat completion stream returned error: ${payload.error.message}`
+                ? `Chat completion stream returned error${payload.error.code ? ` (${payload.error.code})` : ""}: ${payload.error.message}`
                 : "Chat completion stream returned an unknown error.",
             );
           }
