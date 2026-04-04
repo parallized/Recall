@@ -7,6 +7,7 @@ import type { CaptureJobRepository } from "../db/capture-jobs";
 import type { KnowledgeStore } from "../db";
 import type {
   CaptureActiveOperation,
+  CaptureFailureKind,
   CaptureJob,
   CaptureJobDetail,
   CapturePendingItem,
@@ -26,6 +27,7 @@ import type {
   TruthExtractor,
 } from "./types";
 import { normalizeTruthClassificationResult, type HybridHierarchicalTagClassifier } from "./pipeline";
+import { describePreferredOutputLanguage } from "./output-language";
 import { buildStudySearchQuery } from "./search";
 
 type CaptureJobServiceDependencies = {
@@ -164,6 +166,7 @@ const describeStudyCard = (truth: Pick<TruthDraft, "statement" | "summary" | "an
 const truthIdentityKey = (truth: Pick<TruthDraft, "sourceId" | "statement" | "evidenceQuote">) =>
   `${truth.sourceId}::${truth.statement}::${truth.evidenceQuote}`;
 const sensitiveWordsMarker = "sensitive_words_detected";
+const jinaReader451Pattern = /jina reader failed .* status 451/i;
 const logDirectoryPattern = /See logs at (.+?)(?:\.\s*|$)/i;
 
 const defaultRetryPolicy: CaptureJobRetryPolicy = {
@@ -250,6 +253,40 @@ const isSensitiveFailureMessage = (message: string | null) => {
 
   const output = readLoggedOutput(extractLogDirectoryFromMessage(message));
   return output?.toLowerCase().includes(sensitiveWordsMarker) ?? false;
+};
+
+const isJinaReader451FailureMessage = (message: string | null) =>
+  typeof message === "string" && jinaReader451Pattern.test(message);
+
+const normalizeFailureMessage = (message: string | null): {
+  failureKind: CaptureFailureKind | null;
+  failureLabel: string | null;
+} => {
+  if (!message) {
+    return {
+      failureKind: null,
+      failureLabel: null,
+    };
+  }
+
+  if (isSensitiveFailureMessage(message)) {
+    return {
+      failureKind: "sensitive_content",
+      failureLabel: "包含敏感内容",
+    };
+  }
+
+  if (isJinaReader451FailureMessage(message)) {
+    return {
+      failureKind: "jina_reader",
+      failureLabel: "Jina 阅读错误",
+    };
+  }
+
+  return {
+    failureKind: "generic",
+    failureLabel: message,
+  };
 };
 
 const sourcePendingStatus = (source: CaptureSource): CapturePendingItemStatus | null => {
@@ -348,8 +385,11 @@ export class PersistentCaptureJobService implements CaptureJobService {
       return null;
     }
 
+    const presentedSources = detail.sources.map((source) => this.presentSource(source));
+
     return {
       ...detail,
+      sources: presentedSources,
       pendingItems: this.buildPendingItems(detail.job, detail.sources),
       activeOperation: this.buildActiveOperation(detail.job, detail.sources),
     };
@@ -360,7 +400,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     this.options.repository.appendEvent(job.id, {
       channel: "status",
       label: "QUEUED",
-      text: `Queued source discovery for "${job.query}".`,
+      text: `Queued source discovery for "${job.query}" with output language ${describePreferredOutputLanguage(job.preferredOutputLanguage)}.`,
     });
     this.runInBackground(job.id, () => this.runDiscovery(job.id));
 
@@ -416,6 +456,51 @@ export class PersistentCaptureJobService implements CaptureJobService {
     }
 
     return detail;
+  }
+
+  private hasExhaustedRetries(source: CaptureSource) {
+    if (source.status !== "failed") {
+      return false;
+    }
+
+    if (source.contentCached) {
+      return source.extractAttemptCount >= this.retryPolicy.maxExtractAttempts;
+    }
+
+    return source.readAttemptCount >= this.retryPolicy.maxReadAttempts;
+  }
+
+  private presentFailure(message: string | null, skipped = false, attemptCount = 3) {
+    const normalized = normalizeFailureMessage(message);
+
+    if (!normalized.failureLabel) {
+      return {
+        error: null,
+        failureKind: normalized.failureKind,
+        failureLabel: null,
+        skipped,
+      };
+    }
+
+    return {
+      error: skipped ? `${normalized.failureLabel}（已重试 ${attemptCount} 次，已跳过）` : normalized.failureLabel,
+      failureKind: normalized.failureKind,
+      failureLabel: normalized.failureLabel,
+      skipped,
+    };
+  }
+
+  private presentSource(source: CaptureSource): CaptureSource {
+    const attemptCount = source.contentCached ? source.extractAttemptCount : source.readAttemptCount;
+    const presentedFailure = this.presentFailure(source.error, this.hasExhaustedRetries(source), attemptCount);
+
+    return {
+      ...source,
+      error: presentedFailure.error,
+      failureKind: presentedFailure.failureKind,
+      failureLabel: presentedFailure.failureLabel,
+      skipped: presentedFailure.skipped,
+    };
   }
 
   private setActiveOperation(jobId: string, operation: CaptureActiveOperation | null) {
@@ -568,15 +653,13 @@ export class PersistentCaptureJobService implements CaptureJobService {
     const activeOperation = this.buildActiveOperation(job, sources);
 
     for (const source of sources) {
-      if (source.status === "failed" && isSensitiveFailureMessage(source.error)) {
-        continue;
-      }
-
       const status = sourcePendingStatus(source);
 
       if (!status) {
         continue;
       }
+
+      const presentedSource = this.presentSource(source);
 
       pendingItems.push({
         id: source.id,
@@ -587,7 +670,10 @@ export class PersistentCaptureJobService implements CaptureJobService {
         status,
         sourceUrl: source.url,
         sourceTitle: source.title,
-        error: source.error,
+        error: presentedSource.error,
+        failureKind: presentedSource.failureKind ?? null,
+        failureLabel: presentedSource.failureLabel ?? null,
+        skipped: presentedSource.skipped,
       });
     }
 
@@ -646,7 +732,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
         status,
         sourceUrl: draft.sourceId,
         sourceTitle: source?.title ?? null,
-        error: job.status === "failed" && activeOperation?.itemId === draft.id ? job.lastError : null,
+        ...this.presentFailure(job.status === "failed" && activeOperation?.itemId === draft.id ? job.lastError : null),
       });
     });
 
@@ -720,6 +806,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }) {
     const maxAttempts =
       input.stage === "read" ? this.retryPolicy.maxReadAttempts : this.retryPolicy.maxExtractAttempts;
+    const presentedFailure = this.presentFailure(input.error, input.attemptCount >= maxAttempts, input.attemptCount);
 
     if (input.attemptCount >= maxAttempts) {
       this.options.repository.updateSource(input.source.id, {
@@ -731,7 +818,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       this.appendError(
         input.jobId,
         "RETRY",
-        `${input.source.title}: ${input.stage} failed after ${input.attemptCount} attempts. ${input.error}`,
+        `${input.source.title}: ${input.stage} failed after ${input.attemptCount} attempts. ${presentedFailure.error ?? input.error}`,
       );
       return;
     }
@@ -751,7 +838,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     this.appendStatus(
       input.jobId,
       "RETRY",
-      `${input.source.title}: ${input.stage} failed (${input.attemptCount}/${maxAttempts}). Re-queued to the end of the queue; retry in ${this.formatRetryDelay(delayMs)}.`,
+      `${input.source.title}: ${input.stage} failed (${input.attemptCount}/${maxAttempts}). ${presentedFailure.failureLabel ?? input.error} Re-queued to the end of the queue; retry in ${this.formatRetryDelay(delayMs)}.`,
     );
   }
 
@@ -814,8 +901,12 @@ export class PersistentCaptureJobService implements CaptureJobService {
       const provider = this.resolveProvider(job.provider);
       const searchHits = dedupeHits(
         await provider.search({
-          query: provider.kind === "web-search-api" ? buildStudySearchQuery(job.query) : job.query,
+          query:
+            provider.kind === "web-search-api"
+              ? buildStudySearchQuery(job.query, job.preferredOutputLanguage)
+              : job.query,
           limit: job.searchLimit,
+          preferredOutputLanguage: job.preferredOutputLanguage,
           reporter: this.buildUsageReporter(jobId),
         }),
       );
@@ -1141,6 +1232,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
           const drafts = await this.options.truthExtractor.extract({
             query: this.requireJob(jobId).query,
             documents: [item.document],
+            preferredOutputLanguage: this.requireJob(jobId).preferredOutputLanguage,
             reporter,
           });
 
@@ -1210,6 +1302,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     const plannedTaxonomy = await this.options.taxonomyPlanner.plan({
       query: job.query,
       existingNodes: existingTaxonomy,
+      preferredOutputLanguage: job.preferredOutputLanguage,
       reporter,
     });
     const taxonomy = mergeTaxonomy(existingTaxonomy, plannedTaxonomy);
@@ -1223,6 +1316,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       await this.options.tagClassifier.classify({
         truths: drafts,
         taxonomy,
+        preferredOutputLanguage: job.preferredOutputLanguage,
         reporter,
         onTruthStart: async ({ truth, index, total }) => {
           const source = sourceByUrl.get(truth.sourceId);

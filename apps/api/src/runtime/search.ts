@@ -2,6 +2,12 @@ import { z } from "zod";
 
 import { createCallLog, withLogDirectory } from "./call-log";
 import { retryAsync } from "./network";
+import {
+  buildPreferredOutputInstruction,
+  buildPreferredSearchStrategyInstruction,
+  describePreferredOutputLanguage,
+  getPreferredSearchKeywords,
+} from "./output-language";
 import type { SearchHit, SearchProvider, TokenUsage } from "./types";
 
 const webSearchResponseSchema = z.object({
@@ -45,13 +51,9 @@ const normalizeUsage = (usage?: {
   totalTokens: usage?.total_tokens ?? 0,
 });
 
-export const buildStudySearchQuery = (query: string) =>
+export const buildStudySearchQuery = (query: string, preferredOutputLanguage?: string) =>
   [
     query,
-    "题库",
-    "面试题",
-    "问答",
-    "练习题",
     "question bank",
     "interview questions",
     "quiz",
@@ -60,9 +62,10 @@ export const buildStudySearchQuery = (query: string) =>
     "guide",
     "official docs",
     "reference",
+    ...getPreferredSearchKeywords(preferredOutputLanguage),
   ].join(" ");
 
-const buildGrokSearchUserPrompt = (input: { query: string; limit: number }) =>
+const buildGrokSearchUserPrompt = (input: { query: string; limit: number; preferredOutputLanguage?: string }) =>
   [
     "Use live web search to find current, relevant public pages for building a memorization-oriented question bank.",
     'Return only raw JSON with the shape {"results":[{"title":"","url":"","snippet":""}]}.',
@@ -73,10 +76,13 @@ const buildGrokSearchUserPrompt = (input: { query: string; limit: number }) =>
     "If the topic does not have enough obvious question-bank pages, fill the remaining slots with dense official docs, standards, tutorials, handbooks, or reference guides that can be converted into questions later.",
     "Prefer pages with substantial knowledge density over thin landing pages or product marketing pages.",
     "Diversify across subtopics and publishers so the result set can support a large study set.",
+    buildPreferredSearchStrategyInstruction(input.preferredOutputLanguage),
+    buildPreferredOutputInstruction(input.preferredOutputLanguage),
+    `Preferred output language: ${describePreferredOutputLanguage(input.preferredOutputLanguage)}.`,
     "",
     `Query: ${input.query}`,
     `Return at most ${input.limit} results.`,
-    `Expanded search intent: ${buildStudySearchQuery(input.query)}`,
+    `Expanded search intent: ${buildStudySearchQuery(input.query, input.preferredOutputLanguage)}`,
     "Search the live web now and return the JSON object immediately.",
   ].join("\n");
 
@@ -90,7 +96,12 @@ export class DirectWebSearchApiProvider implements SearchProvider {
     },
   ) {}
 
-  async search(input: { query: string; limit: number; reporter?: import("./types").ProgressReporter }): Promise<SearchHit[]> {
+  async search(input: {
+    query: string;
+    limit: number;
+    preferredOutputLanguage?: string;
+    reporter?: import("./types").ProgressReporter;
+  }): Promise<SearchHit[]> {
     const response = await fetch(this.options.baseUrl, {
       method: "POST",
       headers: {
@@ -123,7 +134,12 @@ export class GrokWebSearchProvider implements SearchProvider {
     },
   ) {}
 
-  async search(input: { query: string; limit: number; reporter?: import("./types").ProgressReporter }): Promise<SearchHit[]> {
+  async search(input: {
+    query: string;
+    limit: number;
+    preferredOutputLanguage?: string;
+    reporter?: import("./types").ProgressReporter;
+  }): Promise<SearchHit[]> {
     const requestBody = {
       model: this.options.model,
       stream: false,

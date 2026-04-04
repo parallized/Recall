@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { 
   LayoutDashboard, 
   Search, 
@@ -22,6 +22,13 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import {
+  getOutputLanguageLabel,
+  OUTPUT_LANGUAGE_OPTIONS,
+  OUTPUT_LANGUAGE_STORAGE_KEY,
+  readStoredOutputLanguage,
+  type OutputLanguage,
+} from "./output-language";
 import RepositoryView from "./repository-view";
 
 // --- Utilities ---
@@ -70,6 +77,7 @@ type CaptureJob = {
   id: string;
   query: string;
   provider: "web-search-api" | "grok-search";
+  preferredOutputLanguage: string;
   status: CaptureJobStatus;
   phase: CaptureJobPhase;
   searchLimit: number;
@@ -104,9 +112,14 @@ type CaptureSource = {
   status: CaptureSourceStatus;
   contentCached: boolean;
   truthDraftCount: number;
+  readAttemptCount: number;
+  extractAttemptCount: number;
   fetchedAt: string | null;
   extractedAt: string | null;
   error: string | null;
+  failureKind?: "sensitive_content" | "jina_reader" | "generic" | null;
+  failureLabel?: string | null;
+  skipped?: boolean;
 };
 
 type CaptureEvent = {
@@ -128,6 +141,9 @@ type CapturePendingItem = {
   sourceUrl: string | null;
   sourceTitle: string | null;
   error: string | null;
+  failureKind?: "sensitive_content" | "jina_reader" | "generic" | null;
+  failureLabel?: string | null;
+  skipped?: boolean;
 };
 
 type CaptureActiveOperation = {
@@ -289,6 +305,50 @@ const activePendingStatuses = new Set<CapturePendingItemStatus>([
   "embedding_question",
   "persisting_question",
 ]);
+
+const buildStagePercentages = (counts: Record<PendingStageKey, number>) => {
+  const total = primaryPendingStageOrder.reduce((sum, stage) => sum + counts[stage], 0);
+
+  if (total === 0) {
+    return primaryPendingStageOrder.map((stage) => ({
+      stage,
+      count: 0,
+      percent: 0,
+    }));
+  }
+
+  const base = primaryPendingStageOrder.map((stage) => {
+    const rawPercent = (counts[stage] / total) * 100;
+    return {
+      stage,
+      count: counts[stage],
+      rawPercent,
+      percent: Math.floor(rawPercent),
+      remainder: rawPercent - Math.floor(rawPercent),
+    };
+  });
+
+  let remaining = 100 - base.reduce((sum, item) => sum + item.percent, 0);
+  const sortedByRemainder = [...base].sort((left, right) => right.remainder - left.remainder);
+
+  for (const item of sortedByRemainder) {
+    if (remaining <= 0) {
+      break;
+    }
+
+    item.percent += 1;
+    remaining -= 1;
+  }
+
+  return primaryPendingStageOrder.map((stage) => {
+    const item = base.find((entry) => entry.stage === stage)!;
+    return {
+      stage,
+      count: item.count,
+      percent: item.percent,
+    };
+  });
+};
 
 // --- Components ---
 
@@ -561,6 +621,7 @@ export const App = () => {
   const [collectProvider, setCollectProvider] = useState<"web-search-api" | "grok-search">("grok-search");
   const [collectSearchLimit, setCollectSearchLimit] = useState(100);
   const [collectReadConcurrency, setCollectReadConcurrency] = useState(3);
+  const [preferredOutputLanguage, setPreferredOutputLanguage] = useState<OutputLanguage>(readStoredOutputLanguage);
   const [captureJobs, setCaptureJobs] = useState<CaptureJob[]>([]);
   const [selectedCaptureJobId, setSelectedCaptureJobId] = useState<string | null>(null);
   const [selectedCaptureJob, setSelectedCaptureJob] = useState<CaptureJobDetail | null>(null);
@@ -568,6 +629,10 @@ export const App = () => {
   const [startingCaptureProcessing, setStartingCaptureProcessing] = useState(false);
   const [refreshingCaptureJobs, setRefreshingCaptureJobs] = useState(false);
   const [collectError, setCollectError] = useState<string | null>(null);
+
+  useEffect(() => {
+    window.localStorage.setItem(OUTPUT_LANGUAGE_STORAGE_KEY, preferredOutputLanguage);
+  }, [preferredOutputLanguage]);
 
   const fetchProgress = async () => {
     try {
@@ -641,6 +706,7 @@ export const App = () => {
           provider: collectProvider,
           searchLimit: collectSearchLimit,
           readConcurrency: collectReadConcurrency,
+          preferredOutputLanguage,
         }),
       });
 
@@ -723,46 +789,59 @@ export const App = () => {
   const pendingItems = selectedCaptureJob?.pendingItems ?? [];
   const sources = selectedCaptureJob?.sources ?? [];
   const activeOperation = selectedCaptureJob?.activeOperation ?? null;
+  const unifiedDisplayItems = useMemo(
+    () =>
+      [
+        ...sources.map((source) => ({
+          id: source.id,
+          title: source.title,
+          sourceUrl: source.url,
+          status: source.status,
+          error: source.error,
+          failureKind: source.failureKind ?? null,
+          failureLabel: source.failureLabel ?? null,
+          skipped: source.skipped ?? false,
+          kind: "source" as const,
+          position: source.position,
+        })),
+        ...pendingItems
+          .filter((item) => item.kind === "truth")
+          .map((item) => ({
+            id: item.id,
+            title: item.title || "生成知识条目...",
+            sourceUrl: item.sourceUrl,
+            status: item.status,
+            error: item.error,
+            failureKind: item.failureKind ?? null,
+            failureLabel: item.failureLabel ?? null,
+            skipped: item.skipped ?? false,
+            kind: "truth" as const,
+            position: item.position + 1000,
+          })),
+      ].sort((left, right) => left.position - right.position),
+    [pendingItems, sources],
+  );
 
-  // Unified items list: combine sources (all found) and pendingItems (current tasks)
-  const unifiedDisplayItems = [
-    ...sources.map(s => ({
-      id: s.id,
-      title: s.title,
-      sourceUrl: s.url,
-      status: s.status, // "pending_read" | "reading" | "pending_extract" | "extracting" | "completed" | "failed"
-      error: s.error,
-      kind: "source" as const,
-      position: s.position
-    })),
-    ...pendingItems.filter(p => p.kind === "truth").map(p => ({
-      id: p.id,
-      title: p.title || "生成知识条目...",
-      sourceUrl: p.sourceUrl,
-      status: p.status,
-      error: p.error,
-      kind: "truth" as const,
-      position: p.position + 1000 // Ensure truths come after sources
-    }))
-  ].sort((a, b) => {
-    // 1. Error items first
-    if (a.error && !b.error) return -1;
-    if (!a.error && b.error) return 1;
+  const stageBreakdown = useMemo(() => {
+    const counts: Record<PendingStageKey, number> = {
+      source_read: 0,
+      question_extract: 0,
+      question_bind: 0,
+      embedding: 0,
+      persist: 0,
+      failed: 0,
+    };
 
-    // 2. Currently active items
-    const aActive = activeOperation?.itemId === a.id;
-    const bActive = activeOperation?.itemId === b.id;
-    if (aActive && !bActive) return -1;
-    if (!aActive && bActive) return 1;
+    for (const item of pendingItems) {
+      counts[pendingStageByStatus[item.status]] += 1;
+    }
 
-    // 3. Processing items
-    const isAProcessing = a.status === "reading" || a.status === "extracting" || a.status.includes("ing_");
-    const isBProcessing = b.status === "reading" || b.status === "extracting" || b.status.includes("ing_");
-    if (isAProcessing && !isBProcessing) return -1;
-    if (!isAProcessing && isBProcessing) return 1;
+    return {
+      stages: buildStagePercentages(counts),
+      failedCount: counts.failed,
+    };
+  }, [pendingItems]);
 
-    return a.position - b.position;
-  });
   const activeProgressLabel =
     activeOperation?.progressCurrent && activeOperation?.progressTotal
       ? `${activeOperation.progressCurrent} / ${activeOperation.progressTotal}`
@@ -850,6 +929,13 @@ export const App = () => {
                             {creatingCaptureJob ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <PlusCircle className="w-3.5 h-3.5"/>}
                           </button>
                         </div>
+                        <div className="rounded-xl border border-line/50 bg-silver/30 px-3 py-2">
+                          <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">输出语言</div>
+                          <div className="mt-1 text-[12px] font-bold text-ink">{getOutputLanguageLabel(preferredOutputLanguage)}</div>
+                          <div className="mt-1 text-[10px] leading-relaxed text-ink/45">
+                            搜索优先英文信源，知识卡片、标签和答案按偏好语言输出。
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -932,6 +1018,10 @@ export const App = () => {
                                 <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">消耗 / Tokens</span>
                                 <span className="text-base font-bold text-ink">{formatTokens(selectedCaptureJob.job.usage.totalTokens)}</span>
                               </div>
+                              <div className="flex items-baseline gap-2">
+                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">输出语言</span>
+                                <span className="text-base font-bold text-ink">{getOutputLanguageLabel(selectedCaptureJob.job.preferredOutputLanguage)}</span>
+                              </div>
                             </div>
                           </div>
 
@@ -958,6 +1048,51 @@ export const App = () => {
 
                         {/* Notion-Style Table */}
                         <section>
+                          <div className="mb-6 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_220px]">
+                            <div className="rounded-[24px] border border-line/50 bg-[#fcfcfc] p-4">
+                              <div className="mb-3 flex items-center justify-between">
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-ink/25">阶段分布</div>
+                                <div className="text-[10px] font-bold text-ink/35">
+                                  按执行顺序从左到右，显示当前未完成队列占比
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                                {stageBreakdown.stages.map((stage) => (
+                                  <div
+                                    key={stage.stage}
+                                    className="rounded-2xl border border-line/50 bg-white px-4 py-3"
+                                  >
+                                    <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">
+                                      {pendingStageLabel[stage.stage]}
+                                    </div>
+                                    <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
+                                      {stage.percent}
+                                      <span className="ml-1 text-[11px] font-black text-ink/25">%</span>
+                                    </div>
+                                    <div className="mt-1 text-[10px] font-medium text-ink/40">
+                                      {stage.count} 项
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="rounded-[24px] border border-[#7c3aed]/15 bg-[#7c3aed]/[0.04] p-4">
+                              <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#7c3aed]">跳过信源</div>
+                              <div className="mt-2 text-[26px] font-bold tracking-tight text-[#7c3aed] tabular-nums">
+                                {sources.filter((source) => source.skipped).length}
+                              </div>
+                              <div className="mt-2 text-[11px] leading-relaxed text-[#5b2aa8]">
+                                连续重试 3 次仍失败的信源会标记为紫色跳过，不再反复死磕。
+                              </div>
+                              {stageBreakdown.failedCount > 0 && (
+                                <div className="mt-3 rounded-xl border border-[#7c3aed]/10 bg-white/70 px-3 py-2 text-[10px] font-medium text-[#5b2aa8]">
+                                  当前失败/阻塞队列：{stageBreakdown.failedCount} 项
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
                           <div className="flex items-center justify-between px-4 mb-4">
                             <h3 className="text-[11px] font-black text-ink/60 uppercase tracking-[0.2em]">采集与研究任务流</h3>
                             <div className="text-[10px] font-bold text-ink/30 uppercase tracking-widest">{unifiedDisplayItems.length} ITEMS</div>
@@ -987,12 +1122,15 @@ export const App = () => {
                                     key={item.id}
                                     className={cn(
                                       "grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 min-h-[36px] border-b border-line/10 last:border-0 hover:bg-[#f9f9f9] transition-colors group",
-                                      activeOperation?.itemId === item.id && "bg-accent/[0.02]"
+                                      activeOperation?.itemId === item.id && "bg-accent/[0.02]",
+                                      item.skipped && "bg-[#7c3aed]/[0.03]"
                                     )}
                                   >
                                     {/* Icon Col */}
                                     <div className="flex justify-center">
-                                      {item.error ? (
+                                      {item.skipped ? (
+                                        <MoreHorizontal className="w-4 h-4 text-[#7c3aed]" />
+                                      ) : item.error ? (
                                         <AlertCircle className="w-4 h-4 text-ember" />
                                       ) : activeOperation?.itemId === item.id || item.status === "reading" || item.status === "extracting" ? (
                                         <Loader2 className="w-4 h-4 text-accent animate-spin" />
@@ -1007,7 +1145,7 @@ export const App = () => {
                                     <div className="min-w-0">
                                       <div className={cn(
                                         "text-[13.5px] font-bold truncate tracking-tight transition-colors",
-                                        activeOperation?.itemId === item.id ? "text-accent" : "text-ink"
+                                        item.skipped ? "text-[#7c3aed]" : activeOperation?.itemId === item.id ? "text-accent" : "text-ink"
                                       )}>
                                         {item.title || "正在研读文档内容..."}
                                       </div>
@@ -1033,7 +1171,7 @@ export const App = () => {
                                     <div className="min-w-0">
                                       <div className={cn(
                                         "text-[11px] font-bold tracking-tight truncate whitespace-nowrap",
-                                        item.error ? "text-ember" : "text-ink/40"
+                                        item.skipped ? "text-[#7c3aed]" : item.error ? "text-ember" : "text-ink/40"
                                       )}>
                                         {item.error || (item.kind === "source" ? sourceStatusLabel[item.status as CaptureSourceStatus] : pendingItemStatusLabel[item.status as CapturePendingItemStatus])}
                                       </div>
@@ -1058,9 +1196,75 @@ export const App = () => {
                 </div>
               )}
               {view === "settings" && (
-                <div className="flex flex-col items-center justify-center h-[60vh] text-ink/20 space-y-4">
-                  <Settings className="w-16 h-16 opacity-10" />
-                  <p className="font-bold tracking-widest uppercase text-xs">偏好设置配置中</p>
+                <div className="h-full overflow-y-auto custom-scrollbar px-12 pt-16 pb-28">
+                  <div className="max-w-4xl space-y-8">
+                    <header className="space-y-3">
+                      <div className="text-[10px] font-black uppercase tracking-[0.28em] text-ink/20">Preferences</div>
+                      <h1 className="text-[32px] font-bold tracking-tight text-ink">偏好设置</h1>
+                      <p className="max-w-2xl text-[13px] leading-relaxed text-ink/45">
+                        这里控制 AI 生成知识卡片时的默认输出语言。搜索仍会优先查找英文高质量资料，再补充偏好语言结果。
+                      </p>
+                    </header>
+
+                    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+                      <Card className="p-0 overflow-hidden">
+                        <div className="border-b border-line/50 px-6 py-5">
+                          <div className="text-[11px] font-black uppercase tracking-[0.22em] text-ink/25">语言偏好</div>
+                          <div className="mt-2 text-[20px] font-bold tracking-tight text-ink">知识卡片输出语言</div>
+                        </div>
+
+                        <div className="space-y-3 p-6">
+                          {OUTPUT_LANGUAGE_OPTIONS.map((option) => (
+                            <label
+                              key={option.value}
+                              className={cn(
+                                "flex cursor-pointer items-start gap-4 rounded-2xl border px-4 py-4 transition-all",
+                                preferredOutputLanguage === option.value
+                                  ? "border-accent/30 bg-accent/[0.04]"
+                                  : "border-line/60 hover:border-line hover:bg-silver/20",
+                              )}
+                            >
+                              <input
+                                type="radio"
+                                name="preferred-output-language"
+                                value={option.value}
+                                checked={preferredOutputLanguage === option.value}
+                                onChange={() => setPreferredOutputLanguage(option.value)}
+                                className="mt-1 h-4 w-4 accent-[#007aff]"
+                              />
+                              <div className="min-w-0">
+                                <div className="text-[14px] font-bold tracking-tight text-ink">{option.label}</div>
+                                <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
+                                  {option.description}
+                                </div>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </Card>
+
+                      <div className="space-y-4">
+                        <Card compact>
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-ink/20">当前默认</div>
+                          <div className="mt-2 text-[24px] font-bold tracking-tight text-ink">
+                            {getOutputLanguageLabel(preferredOutputLanguage)}
+                          </div>
+                          <div className="mt-2 text-[11px] leading-relaxed text-ink/45">
+                            新发起的采集任务会继承这个语言设置，后续卡片标签、答案和解释优先用该语言输出。
+                          </div>
+                        </Card>
+
+                        <Card compact>
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-ink/20">策略说明</div>
+                          <div className="mt-3 space-y-2 text-[11px] leading-relaxed text-ink/50">
+                            <p>1. 检索优先英文资料，保证信源密度和时效性。</p>
+                            <p>2. 英文不够时，再补充偏好语言的信源结果。</p>
+                            <p>3. 到知识卡片层面，题目、标签、标准答案、解释统一回写为偏好语言。</p>
+                          </div>
+                        </Card>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
             </motion.div>

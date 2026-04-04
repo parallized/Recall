@@ -24,6 +24,7 @@ type CaptureJobRow = {
   id: string;
   query: string;
   provider: string;
+  preferred_output_language: string | null;
   status: string;
   phase: string;
   search_limit: number;
@@ -118,6 +119,7 @@ const mapJobRow = (row: CaptureJobRow): CaptureJob => ({
   id: row.id,
   query: row.query,
   provider: row.provider as CaptureJob["provider"],
+  preferredOutputLanguage: row.preferred_output_language ?? "zh-CN",
   status: row.status as CaptureJobStatus,
   phase: row.phase as CaptureJobPhase,
   searchLimit: row.search_limit,
@@ -268,6 +270,7 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
       id TEXT PRIMARY KEY,
       query TEXT NOT NULL,
       provider TEXT NOT NULL,
+      preferred_output_language TEXT DEFAULT 'zh-CN',
       status TEXT NOT NULL,
       phase TEXT NOT NULL,
       search_limit INTEGER NOT NULL,
@@ -355,12 +358,13 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
   ensureColumn("capture_job_sources", "last_read_attempt_at", "TEXT");
   ensureColumn("capture_job_sources", "last_extract_attempt_at", "TEXT");
   ensureColumn("capture_job_sources", "next_retry_at", "TEXT");
+  ensureColumn("capture_jobs", "preferred_output_language", "TEXT DEFAULT 'zh-CN'");
 
   const insertJob = db.query(`
     INSERT INTO capture_jobs (
-      id, query, provider, status, phase, search_limit, read_concurrency, ai_concurrency,
+      id, query, provider, preferred_output_language, status, phase, search_limit, read_concurrency, ai_concurrency,
       prompt_tokens, completion_tokens, total_tokens, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const selectJob = db.query<CaptureJobRow, [string]>(`SELECT * FROM capture_jobs WHERE id = ?`);
   const listJobsQuery = db.query<CaptureJobRow, []>(`SELECT * FROM capture_jobs ORDER BY created_at DESC`);
@@ -481,6 +485,7 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
         id,
         input.query,
         input.provider,
+        input.preferredOutputLanguage ?? "zh-CN",
         "queued_search",
         "search",
         input.searchLimit,

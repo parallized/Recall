@@ -13,10 +13,13 @@ import {
   Target,
   Zap,
   ExternalLink,
-  ShieldCheck
+  ShieldCheck,
+  X
 } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { twMerge } from "tailwind-merge";
 
 function cn(...inputs: ClassValue[]) {
@@ -121,6 +124,119 @@ const matchesSelectedTag = (truth: RepositoryTruth, selectedNode: RepositoryTagN
   return truth.level3TagId === selectedNode.id;
 };
 
+let mermaidInitialized = false;
+
+const MermaidBlock = ({ chart }: { chart: string }) => {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const renderChart = async () => {
+      try {
+        const { default: mermaid } = await import("mermaid");
+
+        if (!mermaidInitialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: "neutral",
+            securityLevel: "loose",
+          });
+          mermaidInitialized = true;
+        }
+
+        const { svg: renderedSvg } = await mermaid.render(
+          `repository-mermaid-${Math.random().toString(36).slice(2)}`,
+          chart,
+        );
+
+        if (!cancelled) {
+          setSvg(renderedSvg);
+          setRenderError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRenderError(error instanceof Error ? error.message : "Mermaid 渲染失败");
+          setSvg(null);
+        }
+      }
+    };
+
+    void renderChart();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  if (renderError) {
+    return (
+      <div className="repository-mermaid-fallback">
+        <div className="repository-mermaid-fallback__label">Mermaid 图渲染失败，已回退为源码</div>
+        <pre>
+          <code>{chart}</code>
+        </pre>
+      </div>
+    );
+  }
+
+  if (!svg) {
+    return (
+      <div className="repository-mermaid-loading">
+        <Loader2 className="h-4 w-4 animate-spin text-accent" />
+        <span>Mermaid 图渲染中...</span>
+      </div>
+    );
+  }
+
+  return <div className="repository-mermaid" dangerouslySetInnerHTML={{ __html: svg }} />;
+};
+
+const MarkdownContent = ({ content }: { content: string }) => (
+  <div className="markdown-body">
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+        code: (props) => {
+          const { className, children, ...rest } = props;
+          const inline = (props as { inline?: boolean }).inline ?? false;
+          const language = /language-(\w+)/.exec(className ?? "")?.[1];
+          const code = String(children).replace(/\n$/, "");
+
+          if (!inline && language === "mermaid") {
+            return <MermaidBlock chart={code} />;
+          }
+
+          if (inline) {
+            return (
+              <code className="markdown-inline-code" {...rest}>
+                {children}
+              </code>
+            );
+          }
+
+          return (
+            <pre className="markdown-pre">
+              <code className={className} {...rest}>
+                {code}
+              </code>
+            </pre>
+          );
+        },
+        table: ({ children }) => (
+          <div className="markdown-table-wrapper">
+            <table>{children}</table>
+          </div>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  </div>
+);
+
 const RepositoryTreeNode = ({
   childrenByParentId,
   depth,
@@ -180,22 +296,16 @@ const RepositoryTreeNode = ({
 
 const RepositoryTruthCard = ({
   truth,
-  selected,
   onSelect,
 }: {
   truth: RepositoryTruth;
-  selected: boolean;
   onSelect: () => void;
 }) => (
   <motion.button
     layout
     onClick={onSelect}
-    className={cn(
-      "w-full px-5 py-2.5 text-left transition-all border-b border-line/10 relative group",
-      selected ? "bg-accent/[0.03]" : "hover:bg-silver/5"
-    )}
+    className="w-full px-5 py-2.5 text-left transition-all border-b border-line/10 relative group hover:bg-silver/5"
   >
-    {selected && <div className="absolute left-1 top-1/2 -translate-y-1/2 w-0.5 h-1/2 bg-accent rounded-full" />}
     <div className="flex items-center gap-3">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1 opacity-20 group-hover:opacity-40 transition-opacity">
@@ -203,7 +313,7 @@ const RepositoryTruthCard = ({
            <span className="text-[8px] font-bold">•</span>
            <span className="text-[8px] font-bold uppercase tracking-widest">{truth.level3TagName}</span>
         </div>
-        <div className={cn("text-[13.5px] font-bold tracking-tight leading-snug truncate", selected ? "text-accent" : "text-ink")}>
+        <div className="text-[13.5px] font-bold tracking-tight leading-snug truncate text-ink">
            {truth.statement}
         </div>
       </div>
@@ -215,6 +325,57 @@ const RepositoryTruthCard = ({
   </motion.button>
 );
 
+const RepositoryDetailModal = ({ 
+  truth, 
+  isOpen, 
+  onClose 
+}: { 
+  truth: RepositoryTruth | null; 
+  isOpen: boolean; 
+  onClose: () => void 
+}) => (
+  <AnimatePresence>
+    {isOpen && (
+      <>
+        {/* Backdrop */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={onClose}
+          className="fixed inset-0 bg-white/20 backdrop-blur-sm z-[60] cursor-zoom-out"
+        />
+
+        {/* Modal Content */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 10 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96, y: 10 }}
+          transition={{ duration: 0.15, ease: [0.23, 1, 0.32, 1] }}
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-2xl max-h-[85vh] z-[70] will-change-[transform,opacity] isolate"
+        >
+          <div className="bg-white/80 backdrop-blur-xl border border-[#efeff1] shadow-[0_30px_90px_rgba(0,0,0,0.12)] rounded-[32px] flex flex-col h-full ring-1 ring-black/5 overflow-hidden transform-gpu" style={{ transform: 'translateZ(0)' }}>
+             {/* Header with Close Button */}
+             <div className="flex justify-end p-6 pb-0 shrink-0">
+                <button 
+                  onClick={onClose}
+                  className="p-2 rounded-full hover:bg-black/5 text-ink/20 hover:text-ink transition-all active:scale-90"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+             </div>
+
+             {/* Detail Panel Wrapper */}
+             <div className="flex-1 overflow-y-auto custom-scrollbar px-10 pb-16 pt-2">
+                <RepositoryDetailPanel truth={truth} />
+             </div>
+          </div>
+        </motion.div>
+      </>
+    )}
+  </AnimatePresence>
+);
+
 const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => {
   if (!truth) {
     return (
@@ -223,7 +384,7 @@ const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => 
             <BookOpen className="h-7 w-7 text-ink/10" />
         </div>
         <div className="text-center space-y-2">
-            <div className="text-[14px] font-bold text-ink">Intelligence Details</div>
+            <div className="text-[14px] font-bold text-ink">知识详情</div>
             <p className="text-[12px] text-ink/40 max-w-[240px] mx-auto leading-relaxed font-medium">从左侧筛选知识点并选择具体的智库条目来查看详细的标准答案与证据链。</p>
         </div>
       </div>
@@ -247,20 +408,20 @@ const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => 
 
       <div className="space-y-10">
         {/* Standard Answer Section */}
-        <section className="space-y-4 prose prose-neutral prose-sm max-w-none">
+        <section className="space-y-4">
            <div className="flex items-center gap-3">
               <div className="h-px bg-line/40 flex-1" />
-              <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 shrink-0">STANDARD_ANSWER</h4>
+              <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 shrink-0">标准答案</h4>
               <div className="h-px bg-line/40 flex-1" />
            </div>
            <div className="text-[15.5px] leading-relaxed text-ink/80 font-medium">
-              {truth.answer ?? truth.summary}
+              <MarkdownContent content={truth.answer ?? truth.summary} />
            </div>
         </section>
 
         {truth.options && truth.options.length > 0 && (
           <section className="space-y-4">
-             <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">AVAILABLE_OPTIONS</h4>
+             <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">备选项</h4>
              <div className="grid gap-2">
                 {truth.options.map((option, index) => {
                   const isAnswer = highlightedAnswer && option.trim() === highlightedAnswer;
@@ -280,8 +441,10 @@ const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => 
 
         {truth.explanation && (
           <section className="space-y-4 bg-[#f9f9f9] rounded-lg p-6 border border-line/40">
-             <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">Intelligence Context</h4>
-             <p className="text-[13px] leading-relaxed text-ink/60 font-medium">{truth.explanation}</p>
+             <h4 className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">延伸说明</h4>
+             <div className="text-[13px] leading-relaxed text-ink/60 font-medium">
+               <MarkdownContent content={truth.explanation} />
+             </div>
           </section>
         )}
 
@@ -289,10 +452,10 @@ const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => 
            <div className="flex items-center justify-between">
               <div className="flex items-center gap-3 text-ink/30">
                  <Target className="w-3.5 h-3.5" />
-                 <span className="text-[10px] font-bold">Confidence {Math.round(truth.confidence * 100)}%</span>
+                 <span className="text-[10px] font-bold">可信度 {Math.round(truth.confidence * 100)}%</span>
               </div>
               <a href={truth.sourceUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-ink/60 hover:text-accent transition-colors">
-                 <span>Explore Origin</span>
+                 <span>查看信源</span>
                  <ArrowUpRight className="w-3.5 h-3.5" />
               </a>
            </div>
@@ -316,6 +479,7 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
   const [error, setError] = useState<string | null>(null);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [selectedTruthId, setSelectedTruthId] = useState<string | null>(null);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   const fetchRepository = async (silent = false) => {
@@ -419,13 +583,8 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
   useEffect(() => {
     if (filteredTruths.length === 0) {
       setSelectedTruthId(null);
-      return;
     }
-
-    if (!selectedTruthId || !filteredTruths.some((truth) => truth.id === selectedTruthId)) {
-      setSelectedTruthId(filteredTruths[0]!.id);
-    }
-  }, [filteredTruths, selectedTruthId]);
+  }, [filteredTruths]);
 
   const selectedTruth = filteredTruths.find((truth) => truth.id === selectedTruthId) ?? null;
   const repositoryTitle = buildTagPath(selectedTag, nodeById);
@@ -437,7 +596,7 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-[32px] bg-ink/5 border border-line shadow-sm">
             <Loader2 className="h-6 w-6 animate-spin text-accent" />
           </div>
-          <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 animate-pulse">Building Intelligence Repository</div>
+          <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 animate-pulse">正在构建知识仓库</div>
         </div>
       </div>
     );
@@ -446,14 +605,14 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
   if (error) {
     return (
       <div className="max-w-xl mx-auto rounded-2xl border border-ember/10 bg-ember/[0.02] p-10 text-center space-y-6">
-        <div className="text-[20px] font-bold text-ink tracking-tight">Repository Unavailable</div>
+        <div className="text-[20px] font-bold text-ink tracking-tight">知识仓库暂不可用</div>
         <div className="text-[13px] leading-relaxed text-ink/60">{error}</div>
         <button
           onClick={() => void fetchRepository()}
           className="inline-flex items-center gap-3 rounded-lg bg-ink text-white px-6 py-2.5 text-[11px] font-bold transition-all hover:scale-[1.05]"
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          Attempt Reconnect
+          重新连接
         </button>
       </div>
     );
@@ -467,8 +626,8 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
             <FolderTree className="h-8 w-8 text-ink/10" />
           </div>
           <div className="space-y-3">
-             <div className="text-[22px] font-bold text-ink tracking-tighter">Repository Empty</div>
-             <p className="text-[12px] leading-relaxed text-ink/40 font-medium">Please initiate a Question Flow in the Collection view. Validated intelligence will automatically populate this taxonomy map.</p>
+             <div className="text-[22px] font-bold text-ink tracking-tighter">知识仓库为空</div>
+             <p className="text-[12px] leading-relaxed text-ink/40 font-medium">请先在采集视图发起知识流。通过校验的知识卡片会自动进入这里的分类树。</p>
           </div>
         </div>
       </div>
@@ -482,17 +641,17 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
         <aside className="w-[320px] bg-[#f9f9f9] border-r border-line flex flex-col shrink-0 overflow-hidden">
           <header className="px-8 pt-10 pb-4">
              <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-[0.2em] text-ink/20">
-               <span>Repository</span>
+               <span>仓库</span>
                <span>/</span>
                <span>Taxonomy</span>
              </div>
              <h1 className="text-[22px] font-bold text-ink tracking-tight mt-1">智库仓储</h1>
-             <p className="text-ink/40 text-[11px] mt-1 font-bold leading-relaxed uppercase tracking-widest">Knowledge Base</p>
+             <p className="text-ink/40 text-[11px] mt-1 font-bold leading-relaxed tracking-widest">知识仓库</p>
           </header>
 
           <div className="flex-1 flex flex-col min-h-0">
              <div className="px-8 pb-3 flex items-center justify-between">
-                <h3 className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">All Tags</h3>
+                <h3 className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">全部标签</h3>
                 <div className="text-[9px] font-black text-ink/10">{snapshot.taxonomy.length}</div>
              </div>
              
@@ -533,9 +692,9 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
              <div className="space-y-4">
                 <h2 className="text-[32px] font-bold text-ink leading-tight tracking-tight truncate">{repositoryTitle}</h2>
                 <div className="flex items-center gap-8">
-                   <StatItem label="CARDS" value={snapshot.summary.truthCount} />
-                   <StatItem label="TAGS" value={snapshot.summary.level3TagCount} />
-                   <StatItem label="RATIO" value={`${snapshot.summary.multipleChoiceCount}:${snapshot.summary.openEndedCount}`} />
+                   <StatItem label="卡片数" value={snapshot.summary.truthCount} />
+                   <StatItem label="标签数" value={snapshot.summary.level3TagCount} />
+                   <StatItem label="题型比" value={`${snapshot.summary.multipleChoiceCount}:${snapshot.summary.openEndedCount}`} />
                 </div>
              </div>
 
@@ -554,15 +713,17 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
              <div className="pb-40">
               {filteredTruths.length === 0 ? (
                 <div className="py-24 text-center">
-                   <div className="text-[10px] font-black text-ink/10 uppercase tracking-[1em]">NO_DATA_MATCHED</div>
+                   <div className="text-[10px] font-black text-ink/10 uppercase tracking-[1em]">暂无匹配结果</div>
                 </div>
               ) : (
                 filteredTruths.map((truth) => (
                   <RepositoryTruthCard
                     key={truth.id}
                     truth={truth}
-                    selected={truth.id === selectedTruthId}
-                    onSelect={() => setSelectedTruthId(truth.id)}
+                    onSelect={() => {
+                      setSelectedTruthId(truth.id);
+                      setIsDetailOpen(true);
+                    }}
                   />
                 ))
               )}
@@ -570,13 +731,14 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
           </div>
         </div>
 
-        {/* Right Pane: Reading Detail (Pane 3) */}
-        <aside className="w-[520px] bg-white h-screen max-h-screen overflow-y-auto custom-scrollbar shrink-0">
-          <div className="p-12 pb-40">
-             <RepositoryDetailPanel truth={selectedTruth} />
-          </div>
-        </aside>
       </div>
+
+      {/* Floating Detail Modal */}
+      <RepositoryDetailModal
+        truth={selectedTruth}
+        isOpen={isDetailOpen}
+        onClose={() => setIsDetailOpen(false)}
+      />
     </div>
   );
 };

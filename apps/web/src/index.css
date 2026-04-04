@@ -1,5 +1,5 @@
-@import "tailwindcss";
 @import url("https://cdn.jsdelivr.net/npm/@fontsource/maple-mono/index.css");
+@import "tailwindcss";
 
 @theme {
   --color-canvas: #ffffff;
@@ -54,4 +54,153 @@
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     @apply bg-steel/20;
   }
+}
+
+.markdown-body {
+  color: rgba(60, 60, 60, 0.86);
+  font-size: 0.96rem;
+  line-height: 1.8;
+}
+
+.markdown-body > * + * {
+  margin-top: 0.9rem;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  color: rgba(60, 60, 60, 0.95);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.markdown-body h1 {
+  font-size: 1.45rem;
+}
+
+.markdown-body h2 {
+  font-size: 1.25rem;
+}
+
+.markdown-body h3,
+.markdown-body h4 {
+  font-size: 1.05rem;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote {
+  margin: 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.2rem;
+}
+
+.markdown-body li + li {
+  margin-top: 0.25rem;
+}
+
+.markdown-body a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.markdown-inline-code {
+  border: 1px solid rgba(60, 60, 60, 0.08);
+  background: rgba(0, 122, 255, 0.05);
+  border-radius: 0.45rem;
+  padding: 0.08rem 0.4rem;
+  font-size: 0.88em;
+}
+
+.markdown-pre,
+.repository-mermaid-fallback pre {
+  margin: 0;
+  overflow-x: auto;
+  border: 1px solid rgba(60, 60, 60, 0.08);
+  background: #fafafa;
+  border-radius: 1rem;
+  padding: 1rem 1.1rem;
+  font-size: 0.86rem;
+  line-height: 1.7;
+}
+
+.markdown-table-wrapper {
+  overflow-x: auto;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid rgba(60, 60, 60, 0.08);
+  border-radius: 1rem;
+  overflow: hidden;
+  background: white;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border-bottom: 1px solid rgba(60, 60, 60, 0.08);
+  padding: 0.7rem 0.85rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  background: rgba(60, 60, 60, 0.03);
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: rgba(60, 60, 60, 0.72);
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid rgba(0, 122, 255, 0.25);
+  padding-left: 0.9rem;
+  color: rgba(60, 60, 60, 0.6);
+}
+
+.repository-mermaid,
+.repository-mermaid-loading,
+.repository-mermaid-fallback {
+  border: 1px solid rgba(60, 60, 60, 0.08);
+  background: white;
+  border-radius: 1rem;
+}
+
+.repository-mermaid {
+  overflow: auto;
+  padding: 1rem;
+}
+
+.repository-mermaid svg {
+  display: block;
+  width: 100%;
+  min-width: 480px;
+  height: auto;
+}
+
+.repository-mermaid-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  color: rgba(60, 60, 60, 0.45);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.repository-mermaid-fallback {
+  padding: 0.9rem;
+}
+
+.repository-mermaid-fallback__label {
+  margin-bottom: 0.7rem;
+  color: rgba(124, 58, 237, 0.9);
+  font-size: 0.78rem;
+  font-weight: 700;
 }

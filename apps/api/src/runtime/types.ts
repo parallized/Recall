@@ -43,7 +43,12 @@ export type ProgressReporter = (event: CollectionProgressEvent) => void | Promis
 
 export type SearchProvider = {
   kind: SearchProviderKind;
-  search(input: { query: string; limit: number; reporter?: ProgressReporter }): Promise<SearchHit[]>;
+  search(input: {
+    query: string;
+    limit: number;
+    preferredOutputLanguage?: string;
+    reporter?: ProgressReporter;
+  }): Promise<SearchHit[]>;
 };
 
 export type ChatJsonGateway = {
@@ -64,9 +69,19 @@ export type SourceContentReader = {
 };
 
 export type TaxonomyPlanner = {
-  plan(input: { query: string; existingNodes: TaxonomyNode[]; reporter?: ProgressReporter }): Promise<TaxonomyNode[]>;
+  plan(input: {
+    query: string;
+    existingNodes: TaxonomyNode[];
+    preferredOutputLanguage?: string;
+    reporter?: ProgressReporter;
+  }): Promise<TaxonomyNode[]>;
 };
 
 export type TruthExtractor = {
-  extract(input: { query: string; documents: SourceDocument[]; reporter?: ProgressReporter }): Promise<TruthDraft[]>;
+  extract(input: {
+    query: string;
+    documents: SourceDocument[];
+    preferredOutputLanguage?: string;
+    reporter?: ProgressReporter;
+  }): Promise<TruthDraft[]>;
 };

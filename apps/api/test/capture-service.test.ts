@@ -742,7 +742,7 @@ describe("capture-job-service", () => {
     expect(detail.events.some((event) => event.label === "RECOVER" && event.text.includes("Recovered"))).toBe(true);
   });
 
-  test("surfaces non-persisted study cards in pending and hides moderated source failures", async () => {
+  test("surfaces pending cards and normalizes exhausted source failures for display", async () => {
     const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
     const databasePath = join(tempDirectory, "recall.sqlite");
     temporaryDirectories.push(tempDirectory);
@@ -846,13 +846,39 @@ describe("capture-job-service", () => {
         title: "什么是 React 批处理更新？",
         subtitle: "Allowed source",
         status: "classifying_question",
+        error: null,
+      }),
+      expect.objectContaining({
+        kind: "source",
+        title: "Moderated source",
+        status: "failed_extract",
+        error: "包含敏感内容（已重试 3 次，已跳过）",
+        failureKind: "sensitive_content",
+        skipped: true,
       }),
       expect.objectContaining({
         kind: "source",
         title: "Broken source",
         status: "failed_read",
+        error: "Jina 阅读错误（已重试 3 次，已跳过）",
+        failureKind: "jina_reader",
+        skipped: true,
       }),
     ]);
+    expect(detail.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: "Moderated source",
+          error: "包含敏感内容（已重试 3 次，已跳过）",
+          skipped: true,
+        }),
+        expect.objectContaining({
+          title: "Broken source",
+          error: "Jina 阅读错误（已重试 3 次，已跳过）",
+          skipped: true,
+        }),
+      ]),
+    );
   });
 
   test("continues to completion when classification strips moderated truths", async () => {

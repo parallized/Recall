@@ -36,6 +36,7 @@ export type QueryReadModel = Pick<
 const collectRequestSchema = t.Object({
   query: t.String({ minLength: 1 }),
   provider: t.Union([t.Literal("web-search-api"), t.Literal("grok-search")]),
+  preferredOutputLanguage: t.Optional(t.String({ minLength: 2, maxLength: 32 })),
 });
 
 const createCaptureJobSchema = t.Object({
@@ -43,6 +44,7 @@ const createCaptureJobSchema = t.Object({
   provider: t.Union([t.Literal("web-search-api"), t.Literal("grok-search")]),
   searchLimit: t.Optional(t.Number({ minimum: 1, maximum: 100 })),
   readConcurrency: t.Optional(t.Number({ minimum: 1, maximum: 8 })),
+  preferredOutputLanguage: t.Optional(t.String({ minLength: 2, maxLength: 32 })),
 });
 
 const startCaptureProcessingSchema = t.Object({
@@ -178,6 +180,7 @@ export const createApp = ({
         provider: body.provider,
         searchLimit: body.searchLimit ?? 100,
         readConcurrency: body.readConcurrency ?? 3,
+        preferredOutputLanguage: body.preferredOutputLanguage ?? "zh-CN",
       });
     }, { body: createCaptureJobSchema })
     .post("/capture/jobs/:id/process", async ({ params, body, set }) => {

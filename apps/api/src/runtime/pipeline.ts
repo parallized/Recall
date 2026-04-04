@@ -9,6 +9,10 @@ import {
 } from "@recall/domain";
 
 import { cosineSimilarity } from "./embedder";
+import {
+  buildPreferredOutputInstruction,
+  describePreferredOutputLanguage,
+} from "./output-language";
 import { buildStudySearchQuery } from "./search";
 import type {
   ChatJsonGateway,
@@ -131,7 +135,12 @@ export const normalizeTruthClassificationResult = (
 export class AiTaxonomyPlanner implements TaxonomyPlanner {
   constructor(private readonly gateway: ChatJsonGateway) {}
 
-  async plan(input: { query: string; existingNodes: TaxonomyNode[]; reporter?: ProgressReporter }): Promise<TaxonomyNode[]> {
+  async plan(input: {
+    query: string;
+    existingNodes: TaxonomyNode[];
+    preferredOutputLanguage?: string;
+    reporter?: ProgressReporter;
+  }): Promise<TaxonomyNode[]> {
     const existingSummary = input.existingNodes
       .slice(0, 50)
       .map((node) => `${node.level}:${node.id}:${node.name}`)
@@ -143,9 +152,11 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
         "You design three-level learning taxonomies for question-bank memorization systems.",
         "Return a taxonomy focused on interview-style recall and learning progression rather than encyclopedic breadth.",
         "The output must contain exactly one level1 node, 4-6 level2 nodes, and 3-5 level3 nodes per level2 node.",
+        buildPreferredOutputInstruction(input.preferredOutputLanguage),
       ].join("\n"),
       user: [
         `Topic query: ${input.query}`,
+        `Preferred output language: ${describePreferredOutputLanguage(input.preferredOutputLanguage)}.`,
         "Produce a JSON object with keys level1 and level2.",
         'level1 = {"name":"","description":""}',
         'level2 = [{"name":"","description":"","children":[{"name":"","description":""}]}]',
@@ -194,7 +205,12 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
 export class AiTruthExtractor implements TruthExtractor {
   constructor(private readonly gateway: ChatJsonGateway) {}
 
-  async extract(input: { query: string; documents: SourceDocument[]; reporter?: ProgressReporter }): Promise<TruthDraft[]> {
+  async extract(input: {
+    query: string;
+    documents: SourceDocument[];
+    preferredOutputLanguage?: string;
+    reporter?: ProgressReporter;
+  }): Promise<TruthDraft[]> {
     const drafts: TruthDraft[] = [];
 
     for (const document of chunkDocuments(input.documents)) {
@@ -213,17 +229,22 @@ export class AiTruthExtractor implements TruthExtractor {
             "questionType must be either multiple_choice or open_ended.",
             "For multiple_choice, provide 3-5 plausible options and set answer to the exact correct option text.",
             "For open_ended, omit options and set answer to the canonical answer.",
+            "answer and explanation may use concise GitHub-flavored Markdown when it improves clarity.",
+            "Use headings, bullet lists, tables, or mermaid class diagrams only when they materially help the learner understand a relational concept.",
             "explanation should explain why the answer is correct or what key points must be recalled.",
             "Confidence must be between 0 and 1.",
+            buildPreferredOutputInstruction(input.preferredOutputLanguage),
           ].join("\n"),
           user: [
             `Topic query: ${input.query}`,
+            `Preferred output language: ${describePreferredOutputLanguage(input.preferredOutputLanguage)}.`,
             `Source title: ${document.title}`,
             `Source URL: ${document.url}`,
             `Source snippet: ${document.snippet}`,
             "Return JSON with the shape {\"truths\":[{\"statement\":\"\",\"summary\":\"\",\"questionType\":\"open_ended\",\"options\":[],\"answer\":\"\",\"explanation\":\"\",\"evidenceQuote\":\"\",\"confidence\":0.0}]}",
             "Extract 4 to 8 high-value study questions. Questions should resemble computer interview prep, quiz practice, or deliberate recall prompts.",
             "If the source is not already a question bank, derive questions from the densest, most testable concepts in the source.",
+            "Keep statement, summary, answer, explanation, and user-facing option text in the preferred output language.",
             "Quotes must be copied from the source text exactly as evidence.",
             `Source text:\n${document.content}`,
           ].join("\n\n"),
@@ -311,6 +332,7 @@ export class HybridHierarchicalTagClassifier {
   async classify(input: {
     truths: TruthDraft[];
     taxonomy: TaxonomyNode[];
+    preferredOutputLanguage?: string;
     reporter?: ProgressReporter;
     onTruthStart?: (input: { truth: TruthDraft; index: number; total: number }) => void | Promise<void>;
   }): Promise<TruthClassificationResult> {
@@ -347,8 +369,10 @@ export class HybridHierarchicalTagClassifier {
             "You rerank candidate taxonomy paths for question-answer study cards.",
             "Choose exactly one path from the supplied candidates.",
             "The chosen path must be semantically precise and useful for memorizing interview-style questions.",
+            buildPreferredOutputInstruction(input.preferredOutputLanguage),
           ].join("\n"),
           user: [
+            `Preferred output language: ${describePreferredOutputLanguage(input.preferredOutputLanguage)}.`,
             `Question stem: ${truth.statement}`,
             `Short answer: ${truth.summary}`,
             `Canonical answer: ${truth.answer ?? truth.summary}`,
@@ -415,6 +439,7 @@ export class KnowledgeCollectionOrchestrator {
   async collect(input: {
     query: string;
     provider: SearchProviderKind;
+    preferredOutputLanguage?: string;
     reporter?: ProgressReporter;
   }): Promise<CollectionResult> {
     const provider = this.options.providers.find((candidate) => candidate.kind === input.provider);
@@ -432,8 +457,12 @@ export class KnowledgeCollectionOrchestrator {
     });
 
     const searchHits = await provider.search({
-      query: provider.kind === "web-search-api" ? buildStudySearchQuery(input.query) : input.query,
+      query:
+        provider.kind === "web-search-api"
+          ? buildStudySearchQuery(input.query, input.preferredOutputLanguage)
+          : input.query,
       limit: 5,
+      preferredOutputLanguage: input.preferredOutputLanguage,
       reporter: input.reporter,
     });
 
@@ -481,6 +510,7 @@ export class KnowledgeCollectionOrchestrator {
     const plannedTaxonomy = await this.options.taxonomyPlanner.plan({
       query: input.query,
       existingNodes: existingTaxonomy,
+      preferredOutputLanguage: input.preferredOutputLanguage,
       reporter: input.reporter,
     });
     await input.reporter?.({
@@ -502,6 +532,7 @@ export class KnowledgeCollectionOrchestrator {
       await this.options.truthExtractor.extract({
         query: input.query,
         documents: readableDocuments,
+        preferredOutputLanguage: input.preferredOutputLanguage,
         reporter: input.reporter,
       }),
     );
@@ -528,6 +559,7 @@ export class KnowledgeCollectionOrchestrator {
       await this.options.tagClassifier.classify({
         truths: truthDrafts,
         taxonomy,
+        preferredOutputLanguage: input.preferredOutputLanguage,
         reporter: input.reporter,
       }),
     );

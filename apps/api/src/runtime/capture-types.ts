@@ -25,10 +25,13 @@ export type CapturePendingItemStatus =
   | "failed_read"
   | "failed_extract";
 
+export type CaptureFailureKind = "sensitive_content" | "jina_reader" | "generic";
+
 export type CaptureJob = {
   id: string;
   query: string;
   provider: SearchProviderKind;
+  preferredOutputLanguage: string;
   status: CaptureJobStatus;
   phase: CaptureJobPhase;
   searchLimit: number;
@@ -71,6 +74,9 @@ export type CaptureSource = {
   fetchedAt: string | null;
   extractedAt: string | null;
   error: string | null;
+  failureKind?: CaptureFailureKind | null;
+  failureLabel?: string | null;
+  skipped?: boolean;
 };
 
 export type CaptureJobEvent = {
@@ -92,6 +98,9 @@ export type CapturePendingItem = {
   sourceUrl: string | null;
   sourceTitle: string | null;
   error: string | null;
+  failureKind?: CaptureFailureKind | null;
+  failureLabel?: string | null;
+  skipped?: boolean;
 };
 
 export type CaptureActiveOperation = {
@@ -128,6 +137,7 @@ export type CreateCaptureJobInput = {
   provider: SearchProviderKind;
   searchLimit: number;
   readConcurrency: number;
+  preferredOutputLanguage?: string;
 };
 
 export type StartCaptureProcessingInput = {
