@@ -27,8 +27,8 @@
 <div align="center">
 <table>
 <tr>
-<td><img src="https://via.placeholder.com/600x380/F5F5F5/1A1A1A?text=STATION:+Knowledge+Pipeline" alt="Station View" width="100%"/></td>
-<td><img src="https://via.placeholder.com/600x380/0A0A0A/E5E5E5?text=REPOSITORY:+Dynamic+Taxonomy" alt="Taxonomy View" width="100%"/></td>
+<td><img src="./docs/images/station_view.png" alt="Station View" width="100%"/></td>
+<td><img src="./docs/images/repository_view.png" alt="Taxonomy View" width="100%"/></td>
 </tr>
 <tr>
 <td align="center"><b>采集调度中枢</b>: 动态掌控全网提取进度</td>
