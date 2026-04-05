@@ -18,6 +18,8 @@ export interface KnowledgeStore {
   listRecommendations(now: string): RankedRecommendation[];
   listTruthVectors(): Array<{ id: string; statement: string; level3TagId: string; embedding: number[] }>;
   getTaxonomy(): TaxonomyNode[];
+  markTruthRead(truthId: string): CollectedTruth | null;
+  destroyTruth(truthId: string): boolean;
   saveCollection(result: CollectionResult): CollectionResult;
   recordSignal(signal: UserLearningSignal): void;
   upsertTaxonomy(nodes: TaxonomyNode[]): void;
@@ -51,17 +53,31 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
   ensureColumn("truths", "options_json", "TEXT");
   ensureColumn("truths", "answer", "TEXT");
   ensureColumn("truths", "explanation", "TEXT");
+  ensureColumn("truths", "read_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("truths", "created_at", "TEXT");
+  ensureColumn("truths", "last_read_at", "TEXT");
 
   db.exec(`
-    DELETE FROM taxonomy_nodes
-    WHERE id NOT IN (
-      SELECT level1_tag_id FROM truths
-      UNION
-      SELECT level2_tag_id FROM truths
-      UNION
-      SELECT level3_tag_id FROM truths
-    );
+    UPDATE truths
+    SET
+      read_count = COALESCE(read_count, 0),
+      created_at = COALESCE(created_at, CURRENT_TIMESTAMP)
   `);
+
+  const pruneOrphanTaxonomyNodes = () => {
+    db.exec(`
+      DELETE FROM taxonomy_nodes
+      WHERE id NOT IN (
+        SELECT level1_tag_id FROM truths
+        UNION
+        SELECT level2_tag_id FROM truths
+        UNION
+        SELECT level3_tag_id FROM truths
+      );
+    `);
+  };
+
+  pruneOrphanTaxonomyNodes();
 
   const readTruths = (): CollectedTruth[] =>
     db
@@ -69,7 +85,7 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
         CollectedTruth & { optionsJson?: string | null },
         []
       >(
-        `SELECT id, statement, summary, question_type AS questionType, options_json AS optionsJson, answer, explanation, evidence_quote AS evidenceQuote, confidence, source_url AS sourceUrl, level1_tag_id AS level1TagId, level2_tag_id AS level2TagId, level3_tag_id AS level3TagId FROM truths`,
+        `SELECT id, statement, summary, question_type AS questionType, options_json AS optionsJson, answer, explanation, evidence_quote AS evidenceQuote, confidence, source_url AS sourceUrl, level1_tag_id AS level1TagId, level2_tag_id AS level2TagId, level3_tag_id AS level3TagId, read_count AS readCount, created_at AS createdAt, last_read_at AS lastReadAt FROM truths`,
       )
       .all()
       .map(({ optionsJson, ...truth }) => ({
@@ -82,6 +98,16 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
 
   const readSignals = (): UserLearningSignal[] =>
     db.query<UserLearningSignal, []>(`SELECT truth_id AS truthId, mastery_delta AS masteryDelta, happened_at AS happenedAt FROM learning_signals`).all();
+
+  const readTruthById = (truthId: string) =>
+    db
+      .query<
+        CollectedTruth & { optionsJson?: string | null },
+        [string]
+      >(
+        `SELECT id, statement, summary, question_type AS questionType, options_json AS optionsJson, answer, explanation, evidence_quote AS evidenceQuote, confidence, source_url AS sourceUrl, level1_tag_id AS level1TagId, level2_tag_id AS level2TagId, level3_tag_id AS level3TagId, read_count AS readCount, created_at AS createdAt, last_read_at AS lastReadAt FROM truths WHERE id = ?`,
+      )
+      .get(truthId);
 
   return {
     listTruths: readTruths,
@@ -104,6 +130,41 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
         .all()
         .map((t) => ({ ...t, embedding: JSON.parse(t.embeddingJson) })),
     getTaxonomy: readTaxonomy,
+    markTruthRead: (truthId) => {
+      const existing = readTruthById(truthId);
+
+      if (!existing) {
+        return null;
+      }
+
+      db.query(`UPDATE truths SET read_count = COALESCE(read_count, 0) + 1, last_read_at = ? WHERE id = ?`).run(
+        new Date().toISOString(),
+        truthId,
+      );
+
+      const updated = readTruthById(truthId);
+
+      if (!updated) {
+        return null;
+      }
+
+      const { optionsJson, ...truth } = updated;
+
+      return {
+        ...truth,
+        options: optionsJson ? JSON.parse(optionsJson) : undefined,
+      };
+    },
+    destroyTruth: (truthId) => {
+      const deleted = db.transaction(() => {
+        db.query(`DELETE FROM learning_signals WHERE truth_id = ?`).run(truthId);
+        const result = db.query(`DELETE FROM truths WHERE id = ?`).run(truthId);
+        pruneOrphanTaxonomyNodes();
+        return Number(result.changes ?? 0) > 0;
+      })();
+
+      return deleted;
+    },
     recordSignal: (s) => db.query(`INSERT INTO learning_signals (truth_id, mastery_delta, happened_at) VALUES (?, ?, ?)`).run(s.truthId, s.masteryDelta, s.happenedAt),
     upsertTaxonomy: (nodes) => {
       const q = db.query(`INSERT OR REPLACE INTO taxonomy_nodes (id, parent_id, level, name, description) VALUES (?, ?, ?, ?, ?)`);
@@ -119,9 +180,10 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
       const upsertTruth = db.query(`
         INSERT OR REPLACE INTO truths (
           id, statement, summary, question_type, options_json, answer, explanation, evidence_quote, confidence,
-          source_url, level1_tag_id, level2_tag_id, level3_tag_id, embedding_json, collection_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          source_url, level1_tag_id, level2_tag_id, level3_tag_id, embedding_json, collection_id, read_count, created_at, last_read_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      const savedAt = new Date().toISOString();
       res.truths.forEach(t =>
         upsertTruth.run(
           t.id,
@@ -139,19 +201,13 @@ export const createSqlitePersistence = (databasePath: string): KnowledgeStore =>
           t.level3TagId,
           t.embedding ? JSON.stringify(t.embedding) : null,
           res.collectionId,
+          0,
+          savedAt,
+          null,
         ),
       );
 
-      db.exec(`
-        DELETE FROM taxonomy_nodes
-        WHERE id NOT IN (
-          SELECT level1_tag_id FROM truths
-          UNION
-          SELECT level2_tag_id FROM truths
-          UNION
-          SELECT level3_tag_id FROM truths
-        );
-      `);
+      pruneOrphanTaxonomyNodes();
       
       return res;
     }

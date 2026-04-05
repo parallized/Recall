@@ -4,6 +4,7 @@ import { DOMParser } from "linkedom";
 import type { SearchHit, SourceContentReader, SourceDocument } from "./types";
 
 const normalizeTextContent = (content: string) => content.replace(/\s+/g, " ").trim();
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const buildJinaReaderUrl = (baseUrl: string, sourceUrl: string) => {
   if (baseUrl.includes("{url}")) {
@@ -44,16 +45,60 @@ export class HtmlSourceContentReader implements SourceContentReader {
 }
 
 export class JinaReaderSourceContentReader implements SourceContentReader {
+  private nextAvailableAt = 0;
+  private scheduleTail = Promise.resolve();
+
   constructor(
     private readonly options: {
       baseUrl: string;
       apiKey?: string;
+      requestsPerMinute?: number;
+      now?: () => number;
+      sleep?: (ms: number) => Promise<void>;
     } = {
       baseUrl: "https://r.jina.ai/http://",
+      requestsPerMinute: 15,
     },
   ) {}
 
+  private get now() {
+    return this.options.now ?? Date.now;
+  }
+
+  private get wait() {
+    return this.options.sleep ?? sleep;
+  }
+
+  private get minIntervalMs() {
+    const requestsPerMinute = Math.max(1, this.options.requestsPerMinute ?? 15);
+    return Math.ceil(60_000 / requestsPerMinute);
+  }
+
+  private async waitForRateLimitSlot() {
+    const previous = this.scheduleTail.catch(() => undefined);
+    let release!: () => void;
+    this.scheduleTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+
+    try {
+      const waitMs = Math.max(0, this.nextAvailableAt - this.now());
+
+      if (waitMs > 0) {
+        await this.wait(waitMs);
+      }
+
+      this.nextAvailableAt = this.now() + this.minIntervalMs;
+    } finally {
+      release();
+    }
+  }
+
   async read(hit: SearchHit): Promise<SourceDocument> {
+    await this.waitForRateLimitSlot();
+
     const response = await fetch(buildJinaReaderUrl(this.options.baseUrl, hit.url), {
       headers: {
         Accept: "text/plain",

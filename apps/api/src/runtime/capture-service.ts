@@ -97,26 +97,6 @@ class AsyncQueue<T> {
   }
 }
 
-class AsyncMutex {
-  private tail = Promise.resolve();
-
-  async runExclusive<T>(operation: () => Promise<T>) {
-    const previous = this.tail.catch(() => undefined);
-    let release!: () => void;
-    this.tail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    await previous;
-
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
-  }
-}
-
 const mergeTaxonomy = (existingNodes: TaxonomyNode[], plannedNodes: TaxonomyNode[]) => {
   const mergedById = new Map<string, TaxonomyNode>();
 
@@ -363,7 +343,6 @@ export interface CaptureJobService {
 
 export class PersistentCaptureJobService implements CaptureJobService {
   private readonly runningJobs = new Map<string, Promise<void>>();
-  private readonly extractionMutex = new AsyncMutex();
   private readonly retryPolicy: CaptureJobRetryPolicy;
   private readonly activeOperations = new Map<string, CaptureActiveOperation>();
 
@@ -424,11 +403,12 @@ export class PersistentCaptureJobService implements CaptureJobService {
 
     this.options.repository.updateJob(job.id, {
       readConcurrency: input.readConcurrency,
+      aiConcurrency: input.aiConcurrency,
     });
     this.options.repository.appendEvent(job.id, {
       channel: "status",
       label: "PROCESS",
-      text: `Queued reading with concurrency ${input.readConcurrency}. Source-to-question extraction uses one shared AI lane.`,
+      text: `Queued reading with concurrency ${input.readConcurrency}. Unified AI concurrency is set to ${input.aiConcurrency ?? 1}.`,
     });
     this.runInBackground(job.id, () => this.runProcessing(job.id));
 
@@ -961,7 +941,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       this.appendStatus(
         jobId,
         "READ",
-        `Reading cached sources with concurrency ${currentJob.readConcurrency}. Source-to-question extraction runs through one shared AI lane.`,
+        `Reading cached sources with concurrency ${currentJob.readConcurrency}. Unified AI concurrency is ${currentJob.aiConcurrency}.`,
       );
 
       await this.resumeInterruptedSources(jobId);
@@ -1197,68 +1177,73 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private async consumeQueuedDocuments(jobId: string, queue: AsyncQueue<QueuedDocument>, reporter: ProgressReporter) {
-    while (true) {
-      const item = await queue.next();
+    const aiConcurrency = Math.max(1, this.requireJob(jobId).aiConcurrency);
 
-      if (!item) {
-        break;
-      }
+    await Promise.all(
+      Array.from({ length: aiConcurrency }, async () => {
+        while (true) {
+          const item = await queue.next();
 
-      this.appendStatus(jobId, "QUESTION", `${item.source.title}: waiting for the shared AI extraction lane.`);
+          if (!item) {
+            break;
+          }
 
-      await this.extractionMutex.runExclusive(async () => {
-        const startedAt = new Date().toISOString();
-        const source = this.options.repository.updateSource(item.source.id, {
-          status: "extracting",
-          extractAttemptCount: item.source.extractAttemptCount + 1,
-          lastExtractAttemptAt: startedAt,
-          nextRetryAt: null,
-          error: null,
-        });
-        this.appendStatus(jobId, "QUESTION", `Extracting study questions from ${source.title}.`);
-        this.setActiveOperation(jobId, {
-          itemId: source.id,
-          kind: "source",
-          status: "extracting_questions",
-          title: source.title || source.url,
-          subtitle: source.url,
-          detail: "AI 正在从这个信源抽取题目卡片",
-          progressCurrent: null,
-          progressTotal: null,
-          startedAt,
-        });
+          this.appendStatus(jobId, "QUESTION", `${item.source.title}: waiting for an AI extraction slot.`);
 
-        try {
-          const drafts = await this.options.truthExtractor.extract({
-            query: this.requireJob(jobId).query,
-            documents: [item.document],
-            preferredOutputLanguage: this.requireJob(jobId).preferredOutputLanguage,
-            reporter,
-          });
-
-          this.options.repository.replaceSourceTruthDrafts(jobId, source.url, drafts);
-          this.options.repository.updateSource(source.id, {
-            status: "completed",
-            truthDraftCount: drafts.length,
+          const startedAt = new Date().toISOString();
+          const source = this.options.repository.updateSource(item.source.id, {
+            status: "extracting",
+            extractAttemptCount: item.source.extractAttemptCount + 1,
+            lastExtractAttemptAt: startedAt,
             nextRetryAt: null,
-            extractedAt: new Date().toISOString(),
             error: null,
           });
-          this.appendStatus(jobId, "QUESTION", `${source.title}: extracted ${drafts.length} study-question drafts.`);
-        } catch (error) {
-          const message = toErrorMessage(error);
-          await this.scheduleRetry({
-            jobId,
-            source,
-            stage: "extract",
-            attemptCount: source.extractAttemptCount,
-            error: message,
+          this.appendStatus(jobId, "QUESTION", `Extracting study questions from ${source.title}.`);
+          this.setActiveOperation(jobId, {
+            itemId: source.id,
+            kind: "source",
+            status: "extracting_questions",
+            title: source.title || source.url,
+            subtitle: source.url,
+            detail: "AI 正在从这个信源抽取题目卡片",
+            progressCurrent: null,
+            progressTotal: null,
+            startedAt,
           });
-        } finally {
-          this.setActiveOperation(jobId, null);
+
+          try {
+            const job = this.requireJob(jobId);
+            const drafts = await this.options.truthExtractor.extract({
+              query: job.query,
+              documents: [item.document],
+              preferredOutputLanguage: job.preferredOutputLanguage,
+              reporter,
+            });
+
+            this.options.repository.replaceSourceTruthDrafts(jobId, source.url, drafts);
+            this.options.repository.updateSource(source.id, {
+              status: "completed",
+              truthDraftCount: drafts.length,
+              nextRetryAt: null,
+              extractedAt: new Date().toISOString(),
+              error: null,
+            });
+            this.appendStatus(jobId, "QUESTION", `${source.title}: extracted ${drafts.length} study-question drafts.`);
+          } catch (error) {
+            const message = toErrorMessage(error);
+            await this.scheduleRetry({
+              jobId,
+              source,
+              stage: "extract",
+              attemptCount: source.extractAttemptCount,
+              error: message,
+            });
+          } finally {
+            this.setActiveOperation(jobId, null);
+          }
         }
-      });
-    }
+      }),
+    );
   }
 
   private async finalizeCollection(jobId: string, reporter: ProgressReporter) {
@@ -1316,6 +1301,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       await this.options.tagClassifier.classify({
         truths: drafts,
         taxonomy,
+        aiConcurrency: job.aiConcurrency,
         preferredOutputLanguage: job.preferredOutputLanguage,
         reporter,
         onTruthStart: async ({ truth, index, total }) => {
@@ -1344,7 +1330,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       this.appendStatus(
         jobId,
         "CLASSIFY",
-        `Stripped ${classification.strippedTruthCount} moderated study questions during taxonomy binding.`,
+        `Skipped ${classification.strippedTruthCount} study questions during taxonomy binding because AI filtering or reranking failed.`,
       );
     }
 

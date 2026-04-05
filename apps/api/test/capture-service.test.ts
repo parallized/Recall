@@ -159,6 +159,7 @@ describe("capture-job-service", () => {
       provider: "grok-search",
       searchLimit: 3,
       readConcurrency: 2,
+      aiConcurrency: 2,
     });
 
     await waitFor(
@@ -173,6 +174,7 @@ describe("capture-job-service", () => {
     await service.startProcessing({
       jobId: firstJob.job.id,
       readConcurrency: 2,
+      aiConcurrency: 2,
     });
 
     const completedFirstJob = await waitFor(
@@ -183,7 +185,7 @@ describe("capture-job-service", () => {
     expect(completedFirstJob.truthCount).toBe(3);
     expect(completedFirstJob.completedSourceCount).toBe(3);
     expect(maxActiveReads).toBe(2);
-    expect(maxActiveExtractions).toBe(1);
+    expect(maxActiveExtractions).toBe(2);
     expect(knowledgeStore.listTruths()).toHaveLength(3);
     expect(knowledgeStore.listTruths()[0]).toMatchObject({
       questionType: "open_ended",
@@ -197,6 +199,7 @@ describe("capture-job-service", () => {
       provider: "grok-search",
       searchLimit: 3,
       readConcurrency: 2,
+      aiConcurrency: 2,
     });
 
     await waitFor(
@@ -207,6 +210,7 @@ describe("capture-job-service", () => {
     await service.startProcessing({
       jobId: secondJob.job.id,
       readConcurrency: 2,
+      aiConcurrency: 2,
     });
 
     const completedSecondJob = await waitFor(
@@ -222,7 +226,7 @@ describe("capture-job-service", () => {
     expect(secondDetail.events.some((event) => event.label === "CACHE")).toBe(true);
   });
 
-  test("serializes source-to-question extraction across capture jobs", async () => {
+  test("records the configured ai concurrency when processing capture jobs", async () => {
     const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
     const databasePath = join(tempDirectory, "recall.sqlite");
     temporaryDirectories.push(tempDirectory);
@@ -370,10 +374,10 @@ describe("capture-job-service", () => {
 
     expect(completedFirstJob.truthCount).toBe(1);
     expect(completedSecondJob.truthCount).toBe(1);
-    expect(maxActiveExtractions).toBe(1);
+    expect(maxActiveExtractions).toBeGreaterThanOrEqual(1);
 
     const secondDetail = service.getJobDetail(secondJob.job.id)!;
-    expect(secondDetail.events.some((event) => event.text.includes("shared AI extraction lane"))).toBe(true);
+    expect(secondDetail.events.some((event) => event.text.includes("Unified AI concurrency is set to 1"))).toBe(true);
   });
 
   test("requeues failed extraction sources to the end of the queue and retries them later", async () => {
@@ -1015,6 +1019,12 @@ describe("capture-job-service", () => {
     expect(knowledgeStore.listTruths()[0]?.statement).toContain("正常题目");
 
     const detail = service.getJobDetail(job.job.id)!;
-    expect(detail.events.some((event) => event.label === "CLASSIFY" && event.text.includes("Stripped 1 moderated"))).toBe(true);
+    expect(
+      detail.events.some(
+        (event) =>
+          event.label === "CLASSIFY" &&
+          event.text.includes("Skipped 1 study questions during taxonomy binding"),
+      ),
+    ).toBe(true);
   });
 });

@@ -62,6 +62,9 @@ export const buildStudySearchQuery = (query: string, preferredOutputLanguage?: s
     "guide",
     "official docs",
     "reference",
+    "fundamentals",
+    "evergreen",
+    "core concepts",
     ...getPreferredSearchKeywords(preferredOutputLanguage),
   ].join(" ");
 
@@ -75,6 +78,9 @@ const buildGrokSearchUserPrompt = (input: { query: string; limit: number; prefer
     "Prioritize pages that look like interview question banks, quiz collections, FAQ pages, cheat sheets, flashcards, exam prep, or pages with many discrete Q&A items.",
     "If the topic does not have enough obvious question-bank pages, fill the remaining slots with dense official docs, standards, tutorials, handbooks, or reference guides that can be converted into questions later.",
     "Prefer pages with substantial knowledge density over thin landing pages or product marketing pages.",
+    "Avoid pages whose value mainly depends on one person's private notes, source-specific chapter navigation, or personalized playbooks that do not generalize beyond that artifact.",
+    "Prefer evergreen fundamentals over pages centered on current rankings, current pricing, current patch notes, short-lived tactics, or event-limited guidance.",
+    "Avoid news pages, trend recaps, current-best lists, and pages that are mainly useful only for a narrow audience or a short time window.",
     "Diversify across subtopics and publishers so the result set can support a large study set.",
     buildPreferredSearchStrategyInstruction(input.preferredOutputLanguage),
     buildPreferredOutputInstruction(input.preferredOutputLanguage),
@@ -143,6 +149,7 @@ export class GrokWebSearchProvider implements SearchProvider {
     const requestBody = {
       model: this.options.model,
       stream: false,
+      reasoning_effort: "xhigh",
       temperature: 0,
       response_format: {
         type: "json_object",

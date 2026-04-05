@@ -137,12 +137,14 @@ export type CreateCaptureJobInput = {
   provider: SearchProviderKind;
   searchLimit: number;
   readConcurrency: number;
+  aiConcurrency?: number;
   preferredOutputLanguage?: string;
 };
 
 export type StartCaptureProcessingInput = {
   jobId: string;
   readConcurrency: number;
+  aiConcurrency?: number;
 };
 
 export type QueuedDocument = {

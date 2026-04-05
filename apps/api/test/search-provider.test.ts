@@ -45,6 +45,7 @@ describe("search-provider", () => {
 
       expect(body.model).toBe("grok-4.20-beta");
       expect(body.stream).toBe(false);
+      expect(body.reasoning_effort).toBe("xhigh");
       expect(body.temperature).toBe(0);
       expect(body.response_format).toEqual({ type: "json_object" });
       expect(body.messages).toHaveLength(1);
@@ -55,6 +56,7 @@ describe("search-provider", () => {
       expect(body.messages[0].content).toContain("official docs");
       expect(body.messages[0].content).toContain("React concurrent rendering");
       expect(body.messages[0].content).toContain("Return at most 2 results");
+      expect(body.messages[0].content).toContain("Avoid pages whose value mainly depends on one person's private notes");
 
       return new Response(
         JSON.stringify({

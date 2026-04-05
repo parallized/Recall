@@ -84,6 +84,9 @@ export const collectedTruthSchema = z.object({
   level1TagId: z.string(),
   level2TagId: z.string(),
   level3TagId: z.string(),
+  readCount: z.number().int().nonnegative().optional(),
+  createdAt: z.string().optional(),
+  lastReadAt: z.string().nullable().optional(),
   embedding: z.array(z.number()).optional(),
 });
 export type CollectedTruth = z.infer<typeof collectedTruthSchema>;

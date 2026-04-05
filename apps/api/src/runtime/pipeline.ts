@@ -113,9 +113,103 @@ const mergeTaxonomy = (existingNodes: TaxonomyNode[], plannedNodes: TaxonomyNode
   return [...mergedById.values()];
 };
 
+const runWithConcurrencyLimit = async (
+  total: number,
+  concurrency: number,
+  worker: (index: number) => Promise<void>,
+) => {
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, total));
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < total) {
+        const current = cursor;
+        cursor += 1;
+        await worker(current);
+      }
+    }),
+  );
+};
+
 const isSensitiveWordsError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   return message.toLowerCase().includes("sensitive_words_detected");
+};
+
+const contextDependentTruthPatterns = [
+  /(?:本文|本章|本节|本页|本站|本教程|本课程|本系列|上文|下文|见上文|见下文|该文|该文章|这篇文章|这篇教程|如下图|上图|下图)/,
+  /\b(?:this article|this guide|this tutorial|this chapter|this section|this page|our site|our guide|the above|the following)\b/i,
+  /第[一二三四五六七八九十百千万0-9]+章/,
+  /第[一二三四五六七八九十百千万0-9]+节/,
+  /(?:哪些章节|哪几个章节|哪一章|哪几章|哪一节|哪几节|哪一页|哪几页)/,
+  /《[^》]*(?:学习笔记|面经|八股|题解|教程|指南|课程|手册)[^》]*》/,
+  /(?:使用《[^》]+》时|阅读本文时|看这篇文章时|在本站|在本教程中)/,
+  /\b(?:when using|while reading) (?:this|the)\b/i,
+];
+
+const timeSensitiveTruthPatterns = [
+  /(?:截至|截止到|截止|目前|当前|现阶段|最近|近期|最新|本周|本月|今年|明年|季度|Q[1-4]|赛季|活动期间|限时)/i,
+  /\b(?:as of|currently|latest|recent|this week|this month|this year|next year|quarter|seasonal|limited-time)\b/i,
+  /(?:版本答案|补丁答案|补丁改动|版本改动|版本最强|当前版本|当前环境|meta|tier list|patch\s*\d)/i,
+];
+
+const limitedScopeTruthPatterns = [
+  /(?:只适合|仅适合|适用于.*?(?:同学|候选人|公司|团队|岗位|场景)|针对.*?(?:同学|新人|应届生|社招|校招|转岗))/,
+  /(?:应届生|社招|校招|毕业[一二三四五六七八九十0-9]+年内|转岗新人|特定公司|某公司面试)/,
+  /(?:我的经验|个人经验|作者建议|这位作者|博主建议|up主建议|阿秀的学习笔记|某公司内推|某团队内部)/,
+  /\b(?:for fresh graduates|for campus hires|for experienced hires|for this company|for our team|my notes|personal notes)\b/i,
+];
+
+const normalizeMarkdownLists = (content?: string | null) => {
+  if (!content) {
+    return content;
+  }
+
+  return content
+    .replace(/\r\n/g, "\n")
+    .replace(/([^\n])\s+((?:\d+\.|[-*])\s*)/g, "$1\n$2")
+    .trim();
+};
+
+const normalizeTruthDraftText = <
+  T extends Pick<ExtractedTruthPayload["truths"][number], "answer" | "explanation">
+>(
+  truth: T,
+) => ({
+  ...truth,
+  answer: normalizeMarkdownLists(truth.answer),
+  explanation: normalizeMarkdownLists(truth.explanation),
+});
+
+const isContextDependentTruth = (
+  truth: Pick<ExtractedTruthPayload["truths"][number], "statement" | "summary" | "answer" | "explanation">,
+) => {
+  const combined = [truth.statement, truth.summary, truth.answer ?? "", truth.explanation ?? ""]
+    .filter(Boolean)
+    .join("\n");
+
+  return contextDependentTruthPatterns.some((pattern) => pattern.test(combined));
+};
+
+const isTimeSensitiveTruth = (
+  truth: Pick<ExtractedTruthPayload["truths"][number], "statement" | "summary" | "answer" | "explanation">,
+) => {
+  const combined = [truth.statement, truth.summary, truth.answer ?? "", truth.explanation ?? ""]
+    .filter(Boolean)
+    .join("\n");
+
+  return timeSensitiveTruthPatterns.some((pattern) => pattern.test(combined));
+};
+
+const isLimitedScopeTruth = (
+  truth: Pick<ExtractedTruthPayload["truths"][number], "statement" | "summary" | "answer" | "explanation">,
+) => {
+  const combined = [truth.statement, truth.summary, truth.answer ?? "", truth.explanation ?? ""]
+    .filter(Boolean)
+    .join("\n");
+
+  return limitedScopeTruthPatterns.some((pattern) => pattern.test(combined));
 };
 
 export const normalizeTruthClassificationResult = (
@@ -141,9 +235,14 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
     preferredOutputLanguage?: string;
     reporter?: ProgressReporter;
   }): Promise<TaxonomyNode[]> {
+    const existingLevel1Summary = input.existingNodes
+      .filter((node) => node.level === 1)
+      .slice(0, 20)
+      .map((node) => `- ${node.name}: ${node.description}`)
+      .join("\n");
     const existingSummary = input.existingNodes
       .slice(0, 50)
-      .map((node) => `${node.level}:${node.id}:${node.name}`)
+      .map((node) => `${node.level}:${node.id}:${node.name} | ${node.description}`)
       .join("\n");
 
     const payload = await this.gateway.generateJson<TaxonomyBlueprint>({
@@ -152,6 +251,11 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
         "You design three-level learning taxonomies for question-bank memorization systems.",
         "Return a taxonomy focused on interview-style recall and learning progression rather than encyclopedic breadth.",
         "The output must contain exactly one level1 node, 4-6 level2 nodes, and 3-5 level3 nodes per level2 node.",
+        "Level1 must be a short human knowledge domain such as AI Agent, Game Design, Frontend Engineering, or World of Warcraft.",
+        "Do not use a raw topic title, search query, article title, or temporary campaign name as the level1 node.",
+        "Before creating a new level1 or level2 branch, compare against the existing taxonomy and reuse the closest matching human category whenever it already fits.",
+        "Keep the exact spelling of any reused node name so the system can append into the existing branch instead of creating duplicates.",
+        "Only create the minimum missing branch when the existing taxonomy truly lacks the concept.",
         buildPreferredOutputInstruction(input.preferredOutputLanguage),
       ].join("\n"),
       user: [
@@ -160,7 +264,9 @@ export class AiTaxonomyPlanner implements TaxonomyPlanner {
         "Produce a JSON object with keys level1 and level2.",
         'level1 = {"name":"","description":""}',
         'level2 = [{"name":"","description":"","children":[{"name":"","description":""}]}]',
+        "Use a create-and-append or append-only mindset: prefer extending the existing taxonomy instead of inventing parallel branches.",
         "Avoid duplicating existing nodes when the same semantic concept already exists.",
+        `Existing level1 tags to reuse when possible:\n${existingLevel1Summary || "none"}`,
         `Existing nodes:\n${existingSummary || "none"}`,
       ].join("\n\n"),
       reporter: input.reporter,
@@ -231,7 +337,14 @@ export class AiTruthExtractor implements TruthExtractor {
             "For open_ended, omit options and set answer to the canonical answer.",
             "answer and explanation may use concise GitHub-flavored Markdown when it improves clarity.",
             "Use headings, bullet lists, tables, or mermaid class diagrams only when they materially help the learner understand a relational concept.",
+            "If answer or explanation contains a list, every bullet or numbered item must be on its own line in valid Markdown.",
+            "Never compress multiple items into one paragraph like '1.xxx 2.xxx 3.xxx'.",
             "explanation should explain why the answer is correct or what key points must be recalled.",
+            "Only keep cards that are self-contained, evergreen, and broadly reusable for a learner who has not opened the original source.",
+            "Reject cards whose meaning depends on source-local context such as this article, this chapter, the above section, chapter numbers, or a named personal note/guide/playbook.",
+            "Reject cards that are mainly time-sensitive, patch-sensitive, season-sensitive, event-limited, or likely to expire quickly.",
+            "Reject cards aimed at a narrow audience, one company, one person's workflow, or one short-lived scenario unless the source clearly states an enduring general principle.",
+            "Do not repair missing context by inventing or filling in assumptions. If the source does not provide enough standalone context, drop the card.",
             "Confidence must be between 0 and 1.",
             buildPreferredOutputInstruction(input.preferredOutputLanguage),
           ].join("\n"),
@@ -245,6 +358,9 @@ export class AiTruthExtractor implements TruthExtractor {
             "Extract 4 to 8 high-value study questions. Questions should resemble computer interview prep, quiz practice, or deliberate recall prompts.",
             "If the source is not already a question bank, derive questions from the densest, most testable concepts in the source.",
             "Keep statement, summary, answer, explanation, and user-facing option text in the preferred output language.",
+            "Reject source-specific recommendation cards such as which chapter of a named note to read, what this article suggests focusing on, or advice tied to one person's notes.",
+            "Reject cards that depend on current rankings, current pricing, current policies, current patch notes, or current best picks unless the durable principle itself is clearly stated in the source.",
+            "Prefer durable fundamentals over fast-changing tactics.",
             "Quotes must be copied from the source text exactly as evidence.",
             `Source text:\n${document.content}`,
           ].join("\n\n"),
@@ -259,16 +375,26 @@ export class AiTruthExtractor implements TruthExtractor {
       }
 
       for (const truth of payload.truths) {
+        const normalizedTruth = normalizeTruthDraftText(truth);
+
+        if (
+          isContextDependentTruth(normalizedTruth) ||
+          isTimeSensitiveTruth(normalizedTruth) ||
+          isLimitedScopeTruth(normalizedTruth)
+        ) {
+          continue;
+        }
+
         drafts.push({
           sourceId: document.url,
-          statement: truth.statement,
-          summary: truth.summary,
-          questionType: truth.questionType,
-          options: truth.options,
-          answer: truth.answer,
-          explanation: truth.explanation,
-          evidenceQuote: truth.evidenceQuote,
-          confidence: truth.confidence,
+          statement: normalizedTruth.statement,
+          summary: normalizedTruth.summary,
+          questionType: normalizedTruth.questionType,
+          options: normalizedTruth.options,
+          answer: normalizedTruth.answer,
+          explanation: normalizedTruth.explanation,
+          evidenceQuote: normalizedTruth.evidenceQuote,
+          confidence: normalizedTruth.confidence,
         });
       }
     }
@@ -332,6 +458,7 @@ export class HybridHierarchicalTagClassifier {
   async classify(input: {
     truths: TruthDraft[];
     taxonomy: TaxonomyNode[];
+    aiConcurrency?: number;
     preferredOutputLanguage?: string;
     reporter?: ProgressReporter;
     onTruthStart?: (input: { truth: TruthDraft; index: number; total: number }) => void | Promise<void>;
@@ -343,10 +470,14 @@ export class HybridHierarchicalTagClassifier {
       texts: input.truths.map(truthDescriptor),
     });
 
-    const classifiedTruths: TruthDraft[] = [];
-    const classifications: Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">> = [];
+    const results = new Array<{
+      truth: TruthDraft;
+      assignment: Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">;
+    } | null>(input.truths.length).fill(null);
 
-    for (const [truthIndex, truth] of input.truths.entries()) {
+    await runWithConcurrencyLimit(input.truths.length, input.aiConcurrency ?? 1, async (truthIndex) => {
+      const truth = input.truths[truthIndex]!;
+
       await input.onTruthStart?.({
         truth,
         index: truthIndex,
@@ -360,10 +491,8 @@ export class HybridHierarchicalTagClassifier {
 
       const topPaths = buildCandidatePaths(input.taxonomy, candidateScores).slice(0, 5);
 
-      let reranked: RerankedPath;
-
       try {
-        reranked = await this.options.gateway.generateJson<RerankedPath>({
+        const reranked = await this.options.gateway.generateJson<RerankedPath>({
           schemaName: "reranked_tag_path",
           system: [
             "You rerank candidate taxonomy paths for question-answer study cards.",
@@ -388,31 +517,41 @@ export class HybridHierarchicalTagClassifier {
           ].join("\n\n"),
           reporter: input.reporter,
         });
-      } catch (error) {
-        if (isSensitiveWordsError(error)) {
-          continue;
+
+        const matchedCandidate = topPaths.find(
+          (path) =>
+            path.level1Id === reranked.level1Id &&
+            path.level2Id === reranked.level2Id &&
+            path.level3Id === reranked.level3Id,
+        );
+
+        if (!matchedCandidate) {
+          throw new Error("LLM reranker returned a taxonomy path outside the provided candidate set.");
         }
 
-        throw error;
+        results[truthIndex] = {
+          truth,
+          assignment: {
+            level1TagId: matchedCandidate.level1Id,
+            level2TagId: matchedCandidate.level2Id,
+            level3TagId: matchedCandidate.level3Id,
+          },
+        };
+      } catch {
+        results[truthIndex] = null;
+      }
+    });
+
+    const classifiedTruths: TruthDraft[] = [];
+    const classifications: Array<Pick<CollectedTruth, "level1TagId" | "level2TagId" | "level3TagId">> = [];
+
+    for (const result of results) {
+      if (!result) {
+        continue;
       }
 
-      const matchedCandidate = topPaths.find(
-        (path) =>
-          path.level1Id === reranked.level1Id &&
-          path.level2Id === reranked.level2Id &&
-          path.level3Id === reranked.level3Id,
-      );
-
-      if (!matchedCandidate) {
-        throw new Error("LLM reranker returned a taxonomy path outside the provided candidate set.");
-      }
-
-      classifiedTruths.push(truth);
-      classifications.push({
-        level1TagId: matchedCandidate.level1Id,
-        level2TagId: matchedCandidate.level2Id,
-        level3TagId: matchedCandidate.level3Id,
-      });
+      classifiedTruths.push(result.truth);
+      classifications.push(result.assignment);
     }
 
     return {

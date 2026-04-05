@@ -154,6 +154,7 @@ describe("api", () => {
     expect(await repositoryResponse.json()).toEqual({
       summary: {
         truthCount: 2,
+        unreadCount: 2,
         level1TagCount: 1,
         level2TagCount: 1,
         level3TagCount: 1,
@@ -169,6 +170,7 @@ describe("api", () => {
           description: "Programming, architecture, software delivery, and runtime systems.",
           progress: 0.15,
           truthCount: 2,
+          unreadCount: 2,
         },
         {
           id: "frontend",
@@ -178,6 +180,7 @@ describe("api", () => {
           description: "Browser runtime, UI composition, interaction models, and client state.",
           progress: 0.15,
           truthCount: 2,
+          unreadCount: 2,
         },
         {
           id: "react",
@@ -187,6 +190,7 @@ describe("api", () => {
           description: "React rendering, hooks, component architecture, and state coordination.",
           progress: 0.15,
           truthCount: 2,
+          unreadCount: 2,
         },
       ],
       truths: [
@@ -212,6 +216,10 @@ describe("api", () => {
           level1TagName: "Software Engineering",
           level2TagName: "Frontend Engineering",
           level3TagName: "React",
+          readCount: 0,
+          createdAt: expect.any(String),
+          lastReadAt: null,
+          isUnread: true,
         },
         {
           id: "truth-1",
@@ -229,6 +237,10 @@ describe("api", () => {
           level1TagName: "Software Engineering",
           level2TagName: "Frontend Engineering",
           level3TagName: "React",
+          readCount: 0,
+          createdAt: expect.any(String),
+          lastReadAt: null,
+          isUnread: true,
         },
       ],
     });
@@ -301,6 +313,127 @@ describe("api", () => {
         score: 0.84,
       },
     ]);
+  });
+
+  test("marks truths as read and permanently destroys them", async () => {
+    const pipeline: CollectionPipeline = {
+      collect: async () => ({
+        collectionId: "collection-read-destroy",
+        query: "React state management",
+        provider: "grok-search",
+        truthCount: 1,
+        sourceCount: 1,
+        taxonomy: [
+          {
+            id: "engineering",
+            parentId: null,
+            level: 1,
+            name: "Software Engineering",
+            description: "Programming, architecture, software delivery, and runtime systems.",
+          },
+          {
+            id: "frontend",
+            parentId: "engineering",
+            level: 2,
+            name: "Frontend Engineering",
+            description: "Browser runtime, UI composition, interaction models, and client state.",
+          },
+          {
+            id: "react",
+            parentId: "frontend",
+            level: 3,
+            name: "React",
+            description: "React rendering, hooks, component architecture, and state coordination.",
+          },
+        ],
+        truths: [
+          {
+            id: "truth-destroy-1",
+            statement: "React 在同一个事件循环中会如何处理多次 state update？",
+            summary: "同一事件中的更新会被批处理。",
+            evidenceQuote: "React batches updates within one event.",
+            confidence: 0.92,
+            sourceUrl: "https://react.dev",
+            level1TagId: "engineering",
+            level2TagId: "frontend",
+            level3TagId: "react",
+          },
+        ],
+      }),
+    };
+
+    const app = createApp({
+      pipeline,
+      persistence,
+    });
+
+    await app.handle(
+      new Request("http://localhost/knowledge/collect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "React state management",
+          provider: "grok-search",
+        }),
+      }),
+    );
+
+    const markReadResponse = await app.handle(
+      new Request("http://localhost/truths/truth-destroy-1/read", {
+        method: "POST",
+      }),
+    );
+
+    expect(markReadResponse.status).toBe(200);
+    expect(await markReadResponse.json()).toMatchObject({
+      id: "truth-destroy-1",
+      readCount: 1,
+      lastReadAt: expect.any(String),
+    });
+
+    const repositoryAfterRead = await app.handle(new Request("http://localhost/repository"));
+    expect(await repositoryAfterRead.json()).toMatchObject({
+      summary: {
+        truthCount: 1,
+        unreadCount: 0,
+      },
+      taxonomy: [
+        expect.objectContaining({ id: "engineering", unreadCount: 0 }),
+        expect.objectContaining({ id: "frontend", unreadCount: 0 }),
+        expect.objectContaining({ id: "react", unreadCount: 0 }),
+      ],
+      truths: [
+        expect.objectContaining({
+          id: "truth-destroy-1",
+          readCount: 1,
+          isUnread: false,
+        }),
+      ],
+    });
+
+    const destroyResponse = await app.handle(
+      new Request("http://localhost/truths/truth-destroy-1", {
+        method: "DELETE",
+      }),
+    );
+
+    expect(destroyResponse.status).toBe(200);
+    expect(await destroyResponse.json()).toEqual({ ok: true });
+
+    const repositoryAfterDestroy = await app.handle(new Request("http://localhost/repository"));
+    expect(await repositoryAfterDestroy.json()).toEqual({
+      summary: {
+        truthCount: 0,
+        unreadCount: 0,
+        level1TagCount: 0,
+        level2TagCount: 0,
+        level3TagCount: 0,
+        multipleChoiceCount: 0,
+        openEndedCount: 0,
+      },
+      taxonomy: [],
+      truths: [],
+    });
   });
 
   test("streams collection progress, token usage, and final result", async () => {

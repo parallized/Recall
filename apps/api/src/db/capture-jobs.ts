@@ -212,6 +212,7 @@ export interface CaptureJobRepository {
       status?: CaptureJobStatus;
       phase?: CaptureJobPhase;
       readConcurrency?: number;
+      aiConcurrency?: number;
       truthCount?: number;
       taxonomyCount?: number;
       collectionId?: string | null;
@@ -490,7 +491,7 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
         "search",
         input.searchLimit,
         input.readConcurrency,
-        1,
+        input.aiConcurrency ?? 1,
         usage.promptTokens,
         usage.completionTokens,
         usage.totalTokens,
@@ -530,6 +531,7 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
         status: patch.status,
         phase: patch.phase,
         read_concurrency: patch.readConcurrency,
+        ai_concurrency: patch.aiConcurrency,
         truth_count: patch.truthCount,
         taxonomy_count: patch.taxonomyCount,
         collection_id: patch.collectionId,

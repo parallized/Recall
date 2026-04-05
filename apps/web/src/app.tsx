@@ -37,6 +37,29 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const API_BASE_URL = "http://localhost:4174";
+const SEARCH_LIMIT_STORAGE_KEY = "recall.collect-search-limit";
+const READ_CONCURRENCY_STORAGE_KEY = "recall.collect-read-concurrency";
+const AI_CONCURRENCY_STORAGE_KEY = "recall.collect-ai-concurrency";
+const DEFAULT_COLLECT_SEARCH_LIMIT = 100;
+const DEFAULT_COLLECT_READ_CONCURRENCY = 3;
+const DEFAULT_COLLECT_AI_CONCURRENCY = 3;
+
+const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const readStoredNumberSetting = (key: string, fallback: number, min: number, max: number) => {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  const rawValue = window.localStorage.getItem(key);
+  const parsed = Number(rawValue);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return clampNumber(Math.round(parsed), min, max);
+};
 
 type View = "dashboard" | "search" | "truths" | "graph" | "collect" | "settings";
 
@@ -619,8 +642,20 @@ export const App = () => {
   // Knowledge Collection State
   const [collectQuery, setCollectQuery] = useState("");
   const [collectProvider, setCollectProvider] = useState<"web-search-api" | "grok-search">("grok-search");
-  const [collectSearchLimit, setCollectSearchLimit] = useState(100);
-  const [collectReadConcurrency, setCollectReadConcurrency] = useState(3);
+  const [collectSearchLimit, setCollectSearchLimit] = useState(() =>
+    readStoredNumberSetting(SEARCH_LIMIT_STORAGE_KEY, DEFAULT_COLLECT_SEARCH_LIMIT, 1, 100),
+  );
+  const [collectReadConcurrency, setCollectReadConcurrency] = useState(() =>
+    readStoredNumberSetting(READ_CONCURRENCY_STORAGE_KEY, DEFAULT_COLLECT_READ_CONCURRENCY, 1, 8),
+  );
+  const [collectAiConcurrency, setCollectAiConcurrency] = useState(() =>
+    readStoredNumberSetting(
+      AI_CONCURRENCY_STORAGE_KEY,
+      readStoredNumberSetting(READ_CONCURRENCY_STORAGE_KEY, DEFAULT_COLLECT_AI_CONCURRENCY, 1, 8),
+      1,
+      8,
+    ),
+  );
   const [preferredOutputLanguage, setPreferredOutputLanguage] = useState<OutputLanguage>(readStoredOutputLanguage);
   const [captureJobs, setCaptureJobs] = useState<CaptureJob[]>([]);
   const [selectedCaptureJobId, setSelectedCaptureJobId] = useState<string | null>(null);
@@ -633,6 +668,18 @@ export const App = () => {
   useEffect(() => {
     window.localStorage.setItem(OUTPUT_LANGUAGE_STORAGE_KEY, preferredOutputLanguage);
   }, [preferredOutputLanguage]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SEARCH_LIMIT_STORAGE_KEY, String(collectSearchLimit));
+  }, [collectSearchLimit]);
+
+  useEffect(() => {
+    window.localStorage.setItem(READ_CONCURRENCY_STORAGE_KEY, String(collectReadConcurrency));
+  }, [collectReadConcurrency]);
+
+  useEffect(() => {
+    window.localStorage.setItem(AI_CONCURRENCY_STORAGE_KEY, String(collectAiConcurrency));
+  }, [collectAiConcurrency]);
 
   const fetchProgress = async () => {
     try {
@@ -706,6 +753,7 @@ export const App = () => {
           provider: collectProvider,
           searchLimit: collectSearchLimit,
           readConcurrency: collectReadConcurrency,
+          aiConcurrency: collectAiConcurrency,
           preferredOutputLanguage,
         }),
       });
@@ -727,6 +775,46 @@ export const App = () => {
     }
   };
 
+  const handleExpandTag = async (input: { query: string; tagPath: string }) => {
+    if (creatingCaptureJob) {
+      throw new Error("当前已有采集任务正在创建，请稍后再试。");
+    }
+
+    setCreatingCaptureJob(true);
+    setCollectError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/capture/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: input.query,
+          provider: collectProvider,
+          searchLimit: collectSearchLimit,
+          readConcurrency: collectReadConcurrency,
+          aiConcurrency: collectAiConcurrency,
+          preferredOutputLanguage,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorResponse(response));
+      }
+
+      const detail = (await response.json()) as CaptureJobDetail;
+      setSelectedCaptureJobId(detail.job.id);
+      setSelectedCaptureJob(detail);
+      setView("collect");
+      await fetchCaptureJobs(detail.job.id, true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : `无法为标签「${input.tagPath}」创建扩充任务`;
+      setCollectError(message);
+      throw new Error(message);
+    } finally {
+      setCreatingCaptureJob(false);
+    }
+  };
+
   const handleStartReading = async () => {
     if (!selectedCaptureJobId || startingCaptureProcessing) return;
 
@@ -739,6 +827,7 @@ export const App = () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           readConcurrency: collectReadConcurrency,
+          aiConcurrency: collectAiConcurrency,
         }),
       });
 
@@ -847,6 +936,30 @@ export const App = () => {
       ? `${activeOperation.progressCurrent} / ${activeOperation.progressTotal}`
       : null;
 
+  const updateCollectSearchLimit = (value: number) => {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    setCollectSearchLimit(clampNumber(Math.round(value), 1, 100));
+  };
+
+  const updateCollectReadConcurrency = (value: number) => {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    setCollectReadConcurrency(clampNumber(Math.round(value), 1, 8));
+  };
+
+  const updateCollectAiConcurrency = (value: number) => {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    setCollectAiConcurrency(clampNumber(Math.round(value), 1, 8));
+  };
+
   return (
     <div className="min-h-screen bg-canvas text-ink selection:bg-accent/20 selection:text-ink font-sans antialiased">
       {/* Dynamic View Header (Minimalist) */}
@@ -880,14 +993,16 @@ export const App = () => {
                   <SearchView />
                 </div>
               )}
-              {view === "truths" && (
-                <div className="h-full">
-                  <RepositoryView
-                    apiBaseUrl={API_BASE_URL}
-                    refreshKey={selectedCaptureJob?.job.collectionId ?? null}
-                  />
-                </div>
-              )}
+                {view === "truths" && (
+                  <div className="h-full">
+                    <RepositoryView
+                      apiBaseUrl={API_BASE_URL}
+                      refreshKey={selectedCaptureJob?.job.collectionId ?? null}
+                      onExpandTag={handleExpandTag}
+                      onRepositoryChanged={() => void fetchProgress()}
+                    />
+                  </div>
+                )}
               {view === "collect" && (
                 <div className="flex bg-white h-screen overflow-hidden">
                   {/* Left: Organized Sidebar */}
@@ -934,6 +1049,16 @@ export const App = () => {
                           <div className="mt-1 text-[12px] font-bold text-ink">{getOutputLanguageLabel(preferredOutputLanguage)}</div>
                           <div className="mt-1 text-[10px] leading-relaxed text-ink/45">
                             搜索优先英文信源，知识卡片、标签和答案按偏好语言输出。
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-line/50 bg-silver/30 px-3 py-2">
+                          <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">采集策略</div>
+                          <div className="mt-1 flex items-center justify-between gap-3 text-[11px] font-bold text-ink">
+                            <span>信源数量 {collectSearchLimit}</span>
+                            <span>AI 并发 {collectAiConcurrency}</span>
+                          </div>
+                          <div className="mt-1 text-[10px] leading-relaxed text-ink/45">
+                            网页读取并发 {collectReadConcurrency}，可在底部 System 的偏好设置中调整默认值。
                           </div>
                         </div>
                       </div>
@@ -1017,6 +1142,10 @@ export const App = () => {
                               <div className="flex items-baseline gap-2">
                                 <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">消耗 / Tokens</span>
                                 <span className="text-base font-bold text-ink">{formatTokens(selectedCaptureJob.job.usage.totalTokens)}</span>
+                              </div>
+                              <div className="flex items-baseline gap-2">
+                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">AI 并发</span>
+                                <span className="text-base font-bold text-ink">{selectedCaptureJob.job.aiConcurrency}</span>
                               </div>
                               <div className="flex items-baseline gap-2">
                                 <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">输出语言</span>
@@ -1202,7 +1331,7 @@ export const App = () => {
                       <div className="text-[10px] font-black uppercase tracking-[0.28em] text-ink/20">Preferences</div>
                       <h1 className="text-[32px] font-bold tracking-tight text-ink">偏好设置</h1>
                       <p className="max-w-2xl text-[13px] leading-relaxed text-ink/45">
-                        这里控制 AI 生成知识卡片时的默认输出语言。搜索仍会优先查找英文高质量资料，再补充偏好语言结果。
+                        这里控制 AI 生成知识卡片时的默认输出语言，以及新采集任务使用的信源数量与读取并发。搜索仍会优先查找英文高质量资料，再补充偏好语言结果。
                       </p>
                     </header>
 
@@ -1240,6 +1369,104 @@ export const App = () => {
                               </div>
                             </label>
                           ))}
+
+                          <div className="mt-6 border-t border-line/50 pt-6">
+                            <div className="text-[11px] font-black uppercase tracking-[0.22em] text-ink/25">采集默认参数</div>
+                            <div className="mt-4 space-y-4">
+                              <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-4">
+                                <div className="flex items-center justify-between gap-4">
+                                  <div>
+                                    <div className="text-[13px] font-bold tracking-tight text-ink">搜集信息源数量</div>
+                                    <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
+                                      每次新建采集任务时，最多从搜索结果中保留多少个候选信源。
+                                    </div>
+                                  </div>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={100}
+                                    value={collectSearchLimit}
+                                    onChange={(event) => updateCollectSearchLimit(Number(event.target.value))}
+                                    className="h-10 w-24 rounded-xl border border-line/70 bg-white px-3 text-right text-[14px] font-bold text-ink outline-none transition-all focus:border-accent/40"
+                                  />
+                                </div>
+                                <input
+                                  type="range"
+                                  min={1}
+                                  max={100}
+                                  value={collectSearchLimit}
+                                  onChange={(event) => updateCollectSearchLimit(Number(event.target.value))}
+                                  className="mt-4 h-2 w-full accent-[#007aff]"
+                                />
+                                <div className="mt-2 flex items-center justify-between text-[10px] font-medium text-ink/35">
+                                  <span>更聚焦</span>
+                                  <span>更多候选</span>
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-4">
+                                <div className="flex items-center justify-between gap-4">
+                                  <div>
+                                    <div className="text-[13px] font-bold tracking-tight text-ink">AI 请求并发</div>
+                                    <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
+                                      控制同一时间最多能发出多少个 AI / Grok 请求。抽题与分类都会共用这条并发上限。
+                                    </div>
+                                  </div>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={8}
+                                    value={collectAiConcurrency}
+                                    onChange={(event) => updateCollectAiConcurrency(Number(event.target.value))}
+                                    className="h-10 w-24 rounded-xl border border-line/70 bg-white px-3 text-right text-[14px] font-bold text-ink outline-none transition-all focus:border-accent/40"
+                                  />
+                                </div>
+                                <input
+                                  type="range"
+                                  min={1}
+                                  max={8}
+                                  value={collectAiConcurrency}
+                                  onChange={(event) => updateCollectAiConcurrency(Number(event.target.value))}
+                                  className="mt-4 h-2 w-full accent-[#007aff]"
+                                />
+                                <div className="mt-2 flex items-center justify-between text-[10px] font-medium text-ink/35">
+                                  <span>更稳</span>
+                                  <span>更猛</span>
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-4">
+                                <div className="flex items-center justify-between gap-4">
+                                  <div>
+                                    <div className="text-[13px] font-bold tracking-tight text-ink">网页读取并发</div>
+                                    <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
+                                      控制同时抓取多少个网页正文。它主要影响抓取速度，不代表同时分析的 AI 数量。
+                                    </div>
+                                  </div>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={8}
+                                    value={collectReadConcurrency}
+                                    onChange={(event) => updateCollectReadConcurrency(Number(event.target.value))}
+                                    className="h-10 w-24 rounded-xl border border-line/70 bg-white px-3 text-right text-[14px] font-bold text-ink outline-none transition-all focus:border-accent/40"
+                                  />
+                                </div>
+                                <input
+                                  type="range"
+                                  min={1}
+                                  max={8}
+                                  value={collectReadConcurrency}
+                                  onChange={(event) => updateCollectReadConcurrency(Number(event.target.value))}
+                                  className="mt-4 h-2 w-full accent-[#007aff]"
+                                />
+                                <div className="mt-2 flex items-center justify-between text-[10px] font-medium text-ink/35">
+                                  <span>更省</span>
+                                  <span>更快</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       </Card>
 
@@ -1251,6 +1478,33 @@ export const App = () => {
                           </div>
                           <div className="mt-2 text-[11px] leading-relaxed text-ink/45">
                             新发起的采集任务会继承这个语言设置，后续卡片标签、答案和解释优先用该语言输出。
+                          </div>
+                        </Card>
+
+                        <Card compact>
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-ink/20">采集参数</div>
+                          <div className="mt-3 grid grid-cols-3 gap-3">
+                            <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-3">
+                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">信源数量</div>
+                              <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
+                                {collectSearchLimit}
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-3">
+                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">AI 并发</div>
+                              <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
+                                {collectAiConcurrency}
+                              </div>
+                            </div>
+                            <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-3">
+                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">读取并发</div>
+                              <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
+                                {collectReadConcurrency}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-3 text-[11px] leading-relaxed text-ink/45">
+                            以上配置会直接用于新建任务；已创建的任务仍按创建时参数执行。
                           </div>
                         </Card>
 

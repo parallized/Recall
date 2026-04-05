@@ -3,17 +3,12 @@ import {
   ArrowUpRight,
   BookOpen,
   ChevronRight,
-  Database,
   FolderTree,
-  Layers,
-  Link2,
   Loader2,
+  PlusCircle,
   RefreshCw,
   Search,
   Target,
-  Zap,
-  ExternalLink,
-  ShieldCheck,
   X
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -34,6 +29,7 @@ type RepositoryTagNode = {
   description: string;
   progress: number;
   truthCount: number;
+  unreadCount: number;
 };
 
 type RepositoryTruth = {
@@ -53,11 +49,16 @@ type RepositoryTruth = {
   level1TagName: string;
   level2TagName: string;
   level3TagName: string;
+  readCount: number;
+  createdAt?: string;
+  lastReadAt?: string | null;
+  isUnread: boolean;
 };
 
 type RepositorySnapshot = {
   summary: {
     truthCount: number;
+    unreadCount: number;
     level1TagCount: number;
     level2TagCount: number;
     level3TagCount: number;
@@ -71,6 +72,8 @@ type RepositorySnapshot = {
 type RepositoryViewProps = {
   apiBaseUrl: string;
   refreshKey?: string | null;
+  onExpandTag?: (input: { tagId: string; tagPath: string; query: string }) => Promise<void>;
+  onRepositoryChanged?: () => void | Promise<void>;
 };
 
 const questionTypeLabel: Record<NonNullable<RepositoryTruth["questionType"]>, string> = {
@@ -107,6 +110,11 @@ const buildTagPath = (
 
   return names.join(" / ");
 };
+
+const buildTagExpansionQuery = (
+  node: RepositoryTagNode,
+  nodeById: Map<string, RepositoryTagNode>,
+) => buildTagPath(node, nodeById).replaceAll(" / ", " > ");
 
 const matchesSelectedTag = (truth: RepositoryTruth, selectedNode: RepositoryTagNode | null) => {
   if (!selectedNode) {
@@ -237,6 +245,18 @@ const MarkdownContent = ({ content }: { content: string }) => (
   </div>
 );
 
+const UnreadBadge = ({ count }: { count: number }) => {
+  if (count <= 0) {
+    return null;
+  }
+
+  return (
+    <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent px-1.5 py-0.5 text-[9px] font-black text-white tabular-nums">
+      {count}
+    </span>
+  );
+};
+
 const RepositoryTreeNode = ({
   childrenByParentId,
   depth,
@@ -271,6 +291,7 @@ const RepositoryTreeNode = ({
           <div className="flex items-center gap-2 min-w-0">
              <ChevronRight className={cn("h-3 w-3 shrink-0 opacity-10 transition-transform", children.length > 0 && "opacity-30", selectedTagId === node.id && "text-accent opacity-100 rotate-90")} />
              <span className="truncate text-[12.5px] font-bold tracking-tight">{node.name}</span>
+             <UnreadBadge count={node.unreadCount} />
           </div>
           <span className="text-[8px] font-black opacity-10 group-hover/node:opacity-30 transition-opacity uppercase tracking-widest tabular-nums">{node.truthCount}</span>
         </div>
@@ -312,6 +333,14 @@ const RepositoryTruthCard = ({
            <span className="text-[8px] font-black uppercase tracking-[0.2em] tabular-nums">{questionTypeLabel[truth.questionType ?? "open_ended"]}</span>
            <span className="text-[8px] font-bold">•</span>
            <span className="text-[8px] font-bold uppercase tracking-widest">{truth.level3TagName}</span>
+           <span
+             className={cn(
+               "rounded-full px-2 py-0.5 text-[8px] font-black tracking-[0.16em]",
+               truth.isUnread ? "bg-accent/[0.08] text-accent" : "bg-black/[0.04] text-ink/45",
+             )}
+           >
+             {truth.isUnread ? "未读" : `已读 ${truth.readCount}`}
+           </span>
         </div>
         <div className="text-[13.5px] font-bold tracking-tight leading-snug truncate text-ink">
            {truth.statement}
@@ -328,11 +357,21 @@ const RepositoryTruthCard = ({
 const RepositoryDetailModal = ({ 
   truth, 
   isOpen, 
-  onClose 
+  onClose,
+  onMarkRead,
+  onDestroy,
+  markingRead,
+  destroying,
+  actionError,
 }: { 
   truth: RepositoryTruth | null; 
   isOpen: boolean; 
-  onClose: () => void 
+  onClose: () => void;
+  onMarkRead: (truth: RepositoryTruth) => Promise<void>;
+  onDestroy: (truth: RepositoryTruth) => Promise<void>;
+  markingRead: boolean;
+  destroying: boolean;
+  actionError: string | null;
 }) => (
   <AnimatePresence>
     {isOpen && (
@@ -367,7 +406,14 @@ const RepositoryDetailModal = ({
 
              {/* Detail Panel Wrapper */}
              <div className="flex-1 overflow-y-auto custom-scrollbar px-10 pb-16 pt-2">
-                <RepositoryDetailPanel truth={truth} />
+                <RepositoryDetailPanel
+                  truth={truth}
+                  onMarkRead={onMarkRead}
+                  onDestroy={onDestroy}
+                  markingRead={markingRead}
+                  destroying={destroying}
+                  actionError={actionError}
+                />
              </div>
           </div>
         </motion.div>
@@ -376,7 +422,21 @@ const RepositoryDetailModal = ({
   </AnimatePresence>
 );
 
-const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => {
+const RepositoryDetailPanel = ({
+  truth,
+  onMarkRead,
+  onDestroy,
+  markingRead,
+  destroying,
+  actionError,
+}: {
+  truth: RepositoryTruth | null;
+  onMarkRead: (truth: RepositoryTruth) => Promise<void>;
+  onDestroy: (truth: RepositoryTruth) => Promise<void>;
+  markingRead: boolean;
+  destroying: boolean;
+  actionError: string | null;
+}) => {
   if (!truth) {
     return (
       <div className="h-full flex flex-col items-center justify-center space-y-8 animate-in fade-in duration-1000">
@@ -449,7 +509,7 @@ const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => 
         )}
 
         <section className="space-y-4 py-6 border-t border-line/40">
-           <div className="flex items-center justify-between">
+           <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3 text-ink/30">
                  <Target className="w-3.5 h-3.5" />
                  <span className="text-[10px] font-bold">可信度 {Math.round(truth.confidence * 100)}%</span>
@@ -459,6 +519,30 @@ const RepositoryDetailPanel = ({ truth }: { truth: RepositoryTruth | null }) => 
                  <ArrowUpRight className="w-3.5 h-3.5" />
               </a>
            </div>
+
+           <div className="flex items-center justify-between gap-4 border-t border-line/40 pt-4">
+              <div className="text-[11px] font-bold tracking-tight text-ink/45">
+                 {truth.isUnread ? "未读" : `已读 ${truth.readCount} 次`}
+              </div>
+              <div className="flex items-center gap-5">
+                 <button
+                   onClick={() => void onDestroy(truth)}
+                   disabled={destroying || markingRead}
+                   className="text-[12px] font-bold text-ember/80 transition-colors hover:text-ember disabled:cursor-not-allowed disabled:opacity-40"
+                 >
+                   {destroying ? "销毁中..." : "销毁"}
+                 </button>
+                 <button
+                   onClick={() => void onMarkRead(truth)}
+                   disabled={destroying || markingRead}
+                   className="text-[12px] font-bold text-accent transition-colors hover:text-accent/80 disabled:cursor-not-allowed disabled:opacity-40"
+                 >
+                   {markingRead ? "标记中..." : "已读"}
+                 </button>
+              </div>
+           </div>
+
+           {actionError && <div className="text-[11px] font-medium text-ember">{actionError}</div>}
         </section>
       </div>
     </div>
@@ -472,7 +556,12 @@ const StatItem = ({ label, value }: { label: string, value: string | number }) =
   </div>
 );
 
-export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) => {
+export const RepositoryView = ({
+  apiBaseUrl,
+  refreshKey,
+  onExpandTag,
+  onRepositoryChanged,
+}: RepositoryViewProps) => {
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -481,6 +570,11 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
   const [selectedTruthId, setSelectedTruthId] = useState<string | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [truthActionError, setTruthActionError] = useState<string | null>(null);
+  const [markingReadTruthId, setMarkingReadTruthId] = useState<string | null>(null);
+  const [destroyingTruthId, setDestroyingTruthId] = useState<string | null>(null);
+  const [expandingTagId, setExpandingTagId] = useState<string | null>(null);
+  const [expandError, setExpandError] = useState<string | null>(null);
 
   const fetchRepository = async (silent = false) => {
     if (silent) {
@@ -515,6 +609,12 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
     () => new Map((snapshot?.taxonomy ?? []).map((node) => [node.id, node])),
     [snapshot?.taxonomy],
   );
+
+  useEffect(() => {
+    if (selectedTagId && !nodeById.has(selectedTagId)) {
+      setSelectedTagId(null);
+    }
+  }, [nodeById, selectedTagId]);
 
   const childrenByParentId = useMemo(() => {
     const next = new Map<string, RepositoryTagNode[]>();
@@ -580,14 +680,93 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
     });
   }, [searchQuery, selectedTag, snapshot?.truths]);
 
-  useEffect(() => {
-    if (filteredTruths.length === 0) {
-      setSelectedTruthId(null);
-    }
-  }, [filteredTruths]);
-
-  const selectedTruth = filteredTruths.find((truth) => truth.id === selectedTruthId) ?? null;
+  const selectedTruth = (snapshot?.truths ?? []).find((truth) => truth.id === selectedTruthId) ?? null;
   const repositoryTitle = buildTagPath(selectedTag, nodeById);
+  const visibleMultipleChoiceCount = filteredTruths.filter(
+    (truth) => truth.questionType === "multiple_choice",
+  ).length;
+  const visibleOpenEndedCount = filteredTruths.length - visibleMultipleChoiceCount;
+  const visibleUnreadCount = filteredTruths.filter((truth) => truth.isUnread).length;
+
+  useEffect(() => {
+    if (selectedTruthId && !selectedTruth) {
+      setSelectedTruthId(null);
+      setIsDetailOpen(false);
+    }
+  }, [selectedTruth, selectedTruthId]);
+
+  const handleMarkRead = async (truth: RepositoryTruth) => {
+    setTruthActionError(null);
+    setMarkingReadTruthId(truth.id);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/truths/${truth.id}/read`, {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorResponse(response));
+      }
+
+      await fetchRepository(true);
+      await onRepositoryChanged?.();
+    } catch (actionError) {
+      setTruthActionError(actionError instanceof Error ? actionError.message : "无法标记为已读");
+    } finally {
+      setMarkingReadTruthId(null);
+    }
+  };
+
+  const handleDestroy = async (truth: RepositoryTruth) => {
+    const confirmed = window.confirm("确认彻底销毁这张知识卡片吗？销毁后无法恢复。");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setTruthActionError(null);
+    setDestroyingTruthId(truth.id);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/truths/${truth.id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorResponse(response));
+      }
+
+      setSelectedTruthId(null);
+      setIsDetailOpen(false);
+      await fetchRepository(true);
+      await onRepositoryChanged?.();
+    } catch (actionError) {
+      setTruthActionError(actionError instanceof Error ? actionError.message : "无法销毁知识卡片");
+    } finally {
+      setDestroyingTruthId(null);
+    }
+  };
+
+  const handleExpandSelectedTag = async () => {
+    if (!selectedTag || !onExpandTag) {
+      return;
+    }
+
+    setExpandError(null);
+    setExpandingTagId(selectedTag.id);
+
+    try {
+      await onExpandTag({
+        tagId: selectedTag.id,
+        tagPath: repositoryTitle,
+        query: buildTagExpansionQuery(selectedTag, nodeById),
+      });
+    } catch (actionError) {
+      setExpandError(actionError instanceof Error ? actionError.message : "无法加入扩充题库策略");
+    } finally {
+      setExpandingTagId(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -666,7 +845,10 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
                   >
                     {selectedTagId === null && <div className="absolute left-1 top-1/2 -translate-y-1/2 w-0.5 h-3.5 bg-accent rounded-full" />}
                     <div className="flex items-center justify-between gap-3">
-                       <span className={cn("text-[13px] font-bold tracking-tight", selectedTagId === null ? "text-ink" : "text-ink/40")}>全部知识</span>
+                       <div className="flex min-w-0 items-center gap-2">
+                         <span className={cn("text-[13px] font-bold tracking-tight", selectedTagId === null ? "text-ink" : "text-ink/40")}>全部知识</span>
+                         <UnreadBadge count={snapshot.summary.unreadCount} />
+                       </div>
                        <span className="text-[8px] font-black opacity-10 group-hover:opacity-30 transition-opacity uppercase tracking-widest tabular-nums">{snapshot.summary.truthCount}</span>
                     </div>
                   </button>
@@ -689,12 +871,33 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
         {/* Center Pillar: Question Feed (Pane 2) */}
         <div className="flex-1 flex flex-col h-screen max-h-screen border-r border-line bg-white">
           <header className="px-10 pt-16 pb-8 border-b border-line/40">
-             <div className="space-y-4">
-                <h2 className="text-[32px] font-bold text-ink leading-tight tracking-tight truncate">{repositoryTitle}</h2>
-                <div className="flex items-center gap-8">
-                   <StatItem label="卡片数" value={snapshot.summary.truthCount} />
-                   <StatItem label="标签数" value={snapshot.summary.level3TagCount} />
-                   <StatItem label="题型比" value={`${snapshot.summary.multipleChoiceCount}:${snapshot.summary.openEndedCount}`} />
+             <div className="flex items-start justify-between gap-6">
+                <div className="space-y-4 min-w-0">
+                   <h2 className="text-[32px] font-bold text-ink leading-tight tracking-tight truncate">{repositoryTitle}</h2>
+                   <div className="flex flex-wrap items-center gap-8">
+                      <StatItem label="卡片数" value={selectedTag ? selectedTag.truthCount : snapshot.summary.truthCount} />
+                      <StatItem label="未读" value={selectedTag ? selectedTag.unreadCount : snapshot.summary.unreadCount} />
+                      <StatItem label="题型比" value={`${visibleMultipleChoiceCount}:${visibleOpenEndedCount}`} />
+                   </div>
+                </div>
+
+                <div className="flex items-center gap-3 pt-1 shrink-0">
+                   <button
+                     onClick={() => void fetchRepository(true)}
+                     disabled={refreshing}
+                     className="inline-flex items-center gap-2 rounded-full border border-line/60 px-4 py-2 text-[11px] font-bold text-ink/65 transition-all hover:border-line hover:bg-silver/20 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                   >
+                     {refreshing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                     刷新
+                   </button>
+                   <button
+                     onClick={() => void handleExpandSelectedTag()}
+                     disabled={!selectedTag || !onExpandTag || expandingTagId !== null}
+                     className="inline-flex items-center gap-2 rounded-full bg-ink px-4 py-2 text-[11px] font-bold text-white transition-all hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-45"
+                   >
+                     {expandingTagId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlusCircle className="h-3.5 w-3.5" />}
+                     扩充题库
+                   </button>
                 </div>
              </div>
 
@@ -707,6 +910,14 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
                   className="w-full h-10 rounded-lg border border-line/60 bg-[#fcfcfc] py-3 pl-11 pr-4 text-[13px] text-ink outline-none transition-all placeholder:text-ink/10 focus:bg-white focus:border-accent/40"
                 />
              </div>
+
+             {selectedTag === null && (
+               <div className="mt-3 text-[11px] font-medium text-ink/35">先从左侧选择一个标签，再为它扩充题库。</div>
+             )}
+             {expandError && <div className="mt-3 text-[11px] font-medium text-ember">{expandError}</div>}
+             {!expandError && visibleUnreadCount > 0 && (
+               <div className="mt-3 text-[11px] font-medium text-ink/35">当前视图还有 {visibleUnreadCount} 张未读卡片。</div>
+             )}
           </header>
 
           <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -722,6 +933,7 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
                     truth={truth}
                     onSelect={() => {
                       setSelectedTruthId(truth.id);
+                      setTruthActionError(null);
                       setIsDetailOpen(true);
                     }}
                   />
@@ -737,7 +949,15 @@ export const RepositoryView = ({ apiBaseUrl, refreshKey }: RepositoryViewProps) 
       <RepositoryDetailModal
         truth={selectedTruth}
         isOpen={isDetailOpen}
-        onClose={() => setIsDetailOpen(false)}
+        onClose={() => {
+          setIsDetailOpen(false);
+          setTruthActionError(null);
+        }}
+        onMarkRead={handleMarkRead}
+        onDestroy={handleDestroy}
+        markingRead={selectedTruthId !== null && markingReadTruthId === selectedTruthId}
+        destroying={selectedTruthId !== null && destroyingTruthId === selectedTruthId}
+        actionError={truthActionError}
       />
     </div>
   );

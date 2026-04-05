@@ -44,11 +44,13 @@ const createCaptureJobSchema = t.Object({
   provider: t.Union([t.Literal("web-search-api"), t.Literal("grok-search")]),
   searchLimit: t.Optional(t.Number({ minimum: 1, maximum: 100 })),
   readConcurrency: t.Optional(t.Number({ minimum: 1, maximum: 8 })),
+  aiConcurrency: t.Optional(t.Number({ minimum: 1, maximum: 8 })),
   preferredOutputLanguage: t.Optional(t.String({ minLength: 2, maxLength: 32 })),
 });
 
 const startCaptureProcessingSchema = t.Object({
   readConcurrency: t.Optional(t.Number({ minimum: 1, maximum: 8 })),
+  aiConcurrency: t.Optional(t.Number({ minimum: 1, maximum: 8 })),
 });
 
 const createEmptyUsage = (): TokenUsage => ({
@@ -69,15 +71,40 @@ const isInvalidStreamStateError = (error: unknown) =>
   typeof (error as { code?: unknown }).code === "string" &&
   (error as { code?: string }).code === "ERR_INVALID_STATE";
 
+const countByNodeIdFromTruths = (truths: ReturnType<KnowledgeStore["listTruths"]>) => {
+  const totals = new Map<string, { truthCount: number; unreadCount: number }>();
+
+  for (const truth of truths) {
+    const readCount = truth.readCount ?? 0;
+
+    for (const nodeId of [truth.level1TagId, truth.level2TagId, truth.level3TagId]) {
+      const current = totals.get(nodeId) ?? {
+        truthCount: 0,
+        unreadCount: 0,
+      };
+
+      totals.set(nodeId, {
+        truthCount: current.truthCount + 1,
+        unreadCount: current.unreadCount + Number(readCount === 0),
+      });
+    }
+  }
+
+  return totals;
+};
+
 const buildRepositorySnapshot = (persistence: KnowledgeStore) => {
   const taxonomy = persistence.getTaxonomy();
   const truths = persistence.listTruths();
   const progressByNodeId = new Map(persistence.listTagProgress().map((entry) => [entry.nodeId, entry]));
   const nodeById = new Map(taxonomy.map((node) => [node.id, node]));
+  const countByNodeId = countByNodeIdFromTruths(truths);
+  const totalUnreadCount = truths.filter((truth) => (truth.readCount ?? 0) === 0).length;
 
   return {
     summary: {
       truthCount: truths.length,
+      unreadCount: totalUnreadCount,
       level1TagCount: taxonomy.filter((node) => node.level === 1).length,
       level2TagCount: taxonomy.filter((node) => node.level === 2).length,
       level3TagCount: taxonomy.filter((node) => node.level === 3).length,
@@ -87,16 +114,21 @@ const buildRepositorySnapshot = (persistence: KnowledgeStore) => {
     taxonomy: taxonomy.map((node) => ({
       ...node,
       progress: progressByNodeId.get(node.id)?.progress ?? 0,
-      truthCount: progressByNodeId.get(node.id)?.truthCount ?? 0,
+      truthCount: countByNodeId.get(node.id)?.truthCount ?? 0,
+      unreadCount: countByNodeId.get(node.id)?.unreadCount ?? 0,
     })),
     truths: truths
       .map((truth) => ({
         ...truth,
+        readCount: truth.readCount ?? 0,
+        isUnread: (truth.readCount ?? 0) === 0,
         level1TagName: nodeById.get(truth.level1TagId)?.name ?? truth.level1TagId,
         level2TagName: nodeById.get(truth.level2TagId)?.name ?? truth.level2TagId,
         level3TagName: nodeById.get(truth.level3TagId)?.name ?? truth.level3TagId,
       }))
       .sort((left, right) =>
+        (left.readCount ?? 0) - (right.readCount ?? 0) ||
+        new Date(right.createdAt ?? 0).getTime() - new Date(left.createdAt ?? 0).getTime() ||
         `${left.level1TagName}/${left.level2TagName}/${left.level3TagName}/${left.statement}`.localeCompare(
           `${right.level1TagName}/${right.level2TagName}/${right.level3TagName}/${right.statement}`,
           "zh-CN",
@@ -133,6 +165,32 @@ export const createApp = ({
     .get("/health", () => ({ status: "ok" }))
     .get("/truths", () => persistence.listTruths())
     .get("/repository", () => buildRepositorySnapshot(persistence))
+    .post("/truths/:id/read", ({ params, set }) => {
+      const truth = persistence.markTruthRead(params.id);
+
+      if (!truth) {
+        set.status = 404;
+        return {
+          message: `Truth not found: ${params.id}`,
+        };
+      }
+
+      return truth;
+    })
+    .delete("/truths/:id", ({ params, set }) => {
+      const destroyed = persistence.destroyTruth(params.id);
+
+      if (!destroyed) {
+        set.status = 404;
+        return {
+          message: `Truth not found: ${params.id}`,
+        };
+      }
+
+      return {
+        ok: true,
+      };
+    })
     .get("/tags/progress", () => persistence.listTagProgress())
     .get("/graph", () => {
       const taxonomy = persistence.getTaxonomy();
@@ -180,6 +238,7 @@ export const createApp = ({
         provider: body.provider,
         searchLimit: body.searchLimit ?? 100,
         readConcurrency: body.readConcurrency ?? 3,
+        aiConcurrency: body.aiConcurrency ?? 1,
         preferredOutputLanguage: body.preferredOutputLanguage ?? "zh-CN",
       });
     }, { body: createCaptureJobSchema })
@@ -195,6 +254,7 @@ export const createApp = ({
       return captureJobs.startProcessing({
         jobId: params.id,
         readConcurrency: body.readConcurrency ?? 3,
+        aiConcurrency: body.aiConcurrency ?? 1,
       });
     }, { body: startCaptureProcessingSchema })
     .post("/learning/signals", ({ body }) => {
@@ -350,6 +410,7 @@ export const createProductionRuntime = (config: RuntimeConfig) => {
     sourceReader: new JinaReaderSourceContentReader({
       baseUrl: config.jinaReaderBaseUrl ?? "https://r.jina.ai/http://",
       apiKey: config.jinaReaderApiKey,
+      requestsPerMinute: 15,
     }),
     taxonomyPlanner: new AiTaxonomyPlanner(gateway),
     truthExtractor: new AiTruthExtractor(gateway),

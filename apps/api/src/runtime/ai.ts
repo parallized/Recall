@@ -167,6 +167,7 @@ export class OpenAiCompatibleJsonGateway implements ChatJsonGateway {
     const requestBody = {
       model: this.options.model,
       stream: true,
+      reasoning_effort: "xhigh",
       temperature: 0,
       response_format: {
         type: "json_object",

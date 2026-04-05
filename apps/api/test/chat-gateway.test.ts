@@ -63,6 +63,7 @@ describe("chat-gateway", () => {
 
       expect(body.stream).toBe(true);
       expect(body.model).toBe("grok-4.20-beta");
+      expect(body.reasoning_effort).toBe("xhigh");
       expect(body.response_format).toEqual({ type: "json_object" });
       expect(body.stream_options).toEqual({ include_usage: true });
 
