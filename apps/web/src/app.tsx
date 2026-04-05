@@ -48,6 +48,22 @@ const DEFAULT_COLLECT_AI_CONCURRENCY = 3;
 
 const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
+type ThemePreference = "light" | "dark" | "system";
+const THEME_STORAGE_KEY = "recall.theme-preference";
+
+const readStoredTheme = (): ThemePreference => {
+  if (typeof window === "undefined") return "system";
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === "light" || stored === "dark") return stored as ThemePreference;
+  return "system";
+};
+
+const THEME_OPTIONS: Array<{ value: ThemePreference; label: string; description: string }> = [
+  { value: "light", label: "浅色模式", description: "默认的白纸黑字高亮视觉模式" },
+  { value: "dark", label: "黑夜模式", description: "深邃的暗灰背景与高对比文字" },
+  { value: "system", label: "跟随系统", description: "根据操作系统偏好自动动态切换" },
+];
+
 const readStoredNumberSetting = (key: string, fallback: number, min: number, max: number) => {
   if (typeof window === "undefined") {
     return fallback;
@@ -349,8 +365,8 @@ const DockItem = ({
     className={cn(
       "relative flex items-center px-5 py-2.5 text-sm font-bold transition-all duration-500 rounded-full group active:scale-95",
       active 
-        ? "bg-black text-white" 
-        : "text-ink/30 hover:bg-black/[0.03] hover:text-ink"
+        ? "bg-reverse text-reverse-text shadow-[0_10px_25px_rgba(0,0,0,0.1)]" 
+        : "text-ink/40 hover:bg-reverse/[0.03] hover:text-ink"
     )}
   >
     <Icon className={cn("w-4 h-4 transition-transform group-hover:scale-110", active ? "mr-3" : "")} />
@@ -368,10 +384,10 @@ const DockItem = ({
 );
 
 const Card = ({ children, className, title, extra, compact }: { children: React.ReactNode, className?: string, title?: string, extra?: React.ReactNode, compact?: boolean }) => (
-  <div className={cn("bg-white border border-black/[0.05] rounded-none transition-all flex flex-col", compact ? "p-4" : "p-8", className)}>
+  <div className={cn("bg-canvas border border-reverse/[0.05] rounded-2xl transition-all flex flex-col", compact ? "p-4" : "p-8", className)}>
     {(title || extra) && (
       <div className={cn("flex items-center justify-between", compact ? "mb-4" : "mb-8")}>
-        {title && <h3 className="text-[10px] font-black text-ink/20 uppercase tracking-[0.4em]">{title}</h3>}
+        {title && <h3 className="text-[10px] font-black text-ink/40 uppercase tracking-[0.4em]">{title}</h3>}
         {extra}
       </div>
     )}
@@ -380,16 +396,16 @@ const Card = ({ children, className, title, extra, compact }: { children: React.
 );
 
 const StatCard = ({ label, value, sub, compact }: { label: string, value: string | number, sub?: string, compact?: boolean }) => (
-  <Card compact={compact} className={cn("hover:bg-black/[0.01] transition-colors")}>
-    <div className={cn("font-black text-ink/20 uppercase tracking-[0.4em]", compact ? "text-[9px] mb-2" : "text-[10px] mb-4")}>{label}</div>
+  <Card compact={compact} className={cn("hover:bg-reverse/[0.01] transition-colors")}>
+    <div className={cn("font-black text-ink/40 uppercase tracking-[0.4em]", compact ? "text-[9px] mb-2" : "text-[10px] mb-4")}>{label}</div>
     <div className={cn("font-bold text-ink tracking-tighter leading-none", compact ? "text-2xl" : "text-4xl")}>{value || "-"}</div>
-    {sub && <div className={cn("text-ink/30 font-bold uppercase tracking-widest", compact ? "text-[8px] mt-2" : "text-[10px] mt-4")}>{sub}</div>}
+    {sub && <div className={cn("text-ink/50 font-bold uppercase tracking-widest", compact ? "text-[8px] mt-2" : "text-[10px] mt-4")}>{sub}</div>}
   </Card>
 );
 
 const StatItem = ({ label, value }: { label: string, value: string | number }) => (
   <div className="flex flex-col gap-1 px-1">
-    <span className="text-[9px] font-black text-ink/20 uppercase tracking-[0.3em]">{label}</span>
+    <span className="text-[9px] font-black text-ink/40 uppercase tracking-[0.3em]">{label}</span>
     <span className="text-xl font-bold text-ink tracking-tighter">{value}</span>
   </div>
 );
@@ -402,14 +418,14 @@ const DashboardView = ({ progress }: { progress: TagProgress[] }) => {
 
   return (
     <div className="space-y-10 animate-in fade-in duration-1000 ease-out py-10">
-      <header className="flex items-end justify-between border-b border-black/[0.05] pb-10">
+      <header className="flex items-end justify-between border-b border-reverse/[0.05] pb-10">
         <div className="space-y-4">
-           <div className="text-[10px] font-black text-ink/20 uppercase tracking-[0.5em]">SYSTEM OVERVIEW</div>
+           <div className="text-[10px] font-black text-ink/40 uppercase tracking-[0.5em]">SYSTEM OVERVIEW</div>
            <h1 className="text-[42px] font-bold text-ink leading-none tracking-tighter uppercase">仪表盘概览</h1>
-           <div className="flex items-center gap-8 text-ink/30 text-[11px] font-bold uppercase tracking-widest">
-              <div className="flex items-center gap-3"><Calendar className="w-4 h-4 opacity-30" />{today}</div>
-              <div className="flex items-center gap-3"><Layers className="w-4 h-4 opacity-30" />{progress.length} 知识节点</div>
-              <div className="flex items-center gap-3"><History className="w-4 h-4 opacity-30" />{totalTruths} 事实记录</div>
+           <div className="flex items-center gap-8 text-ink/50 text-[11px] font-bold uppercase tracking-widest">
+              <div className="flex items-center gap-3"><Calendar className="w-4 h-4 opacity-40" />{today}</div>
+              <div className="flex items-center gap-3"><Layers className="w-4 h-4 opacity-40" />{progress.length} 知识节点</div>
+              <div className="flex items-center gap-3"><History className="w-4 h-4 opacity-40" />{totalTruths} 事实记录</div>
            </div>
         </div>
       </header>
@@ -421,24 +437,24 @@ const DashboardView = ({ progress }: { progress: TagProgress[] }) => {
         <StatCard compact label="语义关联" value="-" />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-10 border-t border-black/[0.05] pt-12">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-10 border-t border-reverse/[0.05] pt-12">
         <div className="space-y-8">
-           <div className="flex items-center gap-4 text-ink/20">
+           <div className="flex items-center gap-4 text-ink/40">
               <h3 className="text-[10px] font-black uppercase tracking-[0.4em]">掌握度分布</h3>
-              <div className="h-px bg-black/[0.05] flex-1" />
+              <div className="h-px bg-reverse/[0.05] flex-1" />
            </div>
-           <div className="h-[320px] bg-black/[0.01] border border-black/[0.04] flex items-center justify-center">
-              <div className="text-ink/5 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
+           <div className="h-[320px] bg-reverse/[0.01] border border-reverse/[0.04] flex items-center justify-center rounded-2xl">
+              <div className="text-ink/10 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
            </div>
         </div>
 
         <div className="space-y-8">
-           <div className="flex items-center gap-4 text-ink/20">
+           <div className="flex items-center gap-4 text-ink/40">
               <h3 className="text-[10px] font-black uppercase tracking-[0.4em]">采集活跃度</h3>
-              <div className="h-px bg-black/[0.05] flex-1" />
+              <div className="h-px bg-reverse/[0.05] flex-1" />
            </div>
-           <div className="h-[320px] bg-black/[0.01] border border-black/[0.04] flex items-center justify-center">
-              <div className="text-ink/5 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
+           <div className="h-[320px] bg-reverse/[0.01] border border-reverse/[0.04] flex items-center justify-center rounded-2xl">
+              <div className="text-ink/10 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
            </div>
         </div>
       </div>
@@ -468,7 +484,7 @@ const SearchView = () => {
   return (
     <div className="py-12 animate-in fade-in duration-1000 ease-out max-w-4xl mx-auto">
       <div className="relative group">
-        <div className="absolute inset-y-0 left-8 flex items-center pointer-events-none text-ink/10 group-focus-within:text-ink/60 transition-colors duration-500">
+        <div className="absolute inset-y-0 left-8 flex items-center pointer-events-none text-ink/30 group-focus-within:text-ink/60 transition-colors duration-500">
           <Search className="w-6 h-6" />
         </div>
         <input
@@ -477,11 +493,11 @@ const SearchView = () => {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           placeholder="检索知识语义链条..."
-          className="w-full bg-black/[0.01] border border-black/[0.05] focus:border-black rounded-none pl-20 pr-8 py-8 text-ink placeholder:text-ink/10 transition-all duration-500 outline-none text-2xl font-bold tracking-tight uppercase"
+          className="w-full bg-reverse/[0.01] border border-reverse/[0.05] focus:border-reverse rounded-2xl pl-20 pr-8 py-8 text-ink placeholder:text-ink/20 transition-all duration-500 outline-none text-2xl font-bold tracking-tight uppercase"
         />
         {loading && (
           <div className="absolute inset-y-0 right-8 flex items-center">
-            <Loader2 className="w-6 h-6 text-black/20 animate-spin" />
+            <Loader2 className="w-6 h-6 text-reverse/40 animate-spin" />
           </div>
         )}
       </div>
@@ -494,13 +510,13 @@ const SearchView = () => {
             transition={{ delay: i * 0.05, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
             key={i}
           >
-            <div className="bg-white border-b border-black/[0.05] p-10 group hover:bg-black/[0.01] transition-all duration-500 cursor-pointer overflow-hidden relative">
+            <div className="bg-canvas border border-reverse/[0.05] p-10 group hover:bg-reverse/[0.015] transition-all duration-500 cursor-pointer overflow-hidden relative rounded-2xl">
               <div className="text-[17px] text-ink leading-relaxed font-bold tracking-tight">
                 {result.statement}
               </div>
               <div className="mt-6 flex flex-wrap gap-3">
                 {result.tags?.map((t: string) => (
-                  <span key={t} className="text-[10px] uppercase tracking-[0.3em] font-black text-ink/20 border border-black/[0.05] px-4 py-1.5 transition-colors group-hover:text-ink/40 group-hover:border-black/10">
+                  <span key={t} className="text-[10px] uppercase tracking-[0.3em] font-black text-ink/40 border border-reverse/[0.06] px-4 py-1.5 transition-colors group-hover:text-ink/60 group-hover:border-reverse/10 rounded-full">
                     {t}
                   </span>
                 ))}
@@ -543,6 +559,33 @@ export const App = () => {
   const [startingCaptureProcessing, setStartingCaptureProcessing] = useState(false);
   const [refreshingCaptureJobs, setRefreshingCaptureJobs] = useState(false);
   const [collectError, setCollectError] = useState<string | null>(null);
+
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readStoredTheme);
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+
+    const applyTheme = () => {
+      const isDark = 
+        themePreference === "dark" || 
+        (themePreference === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      
+      if (isDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    };
+
+    applyTheme();
+
+    if (themePreference === "system") {
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const handler = () => applyTheme();
+      mediaQuery.addEventListener("change", handler);
+      return () => mediaQuery.removeEventListener("change", handler);
+    }
+  }, [themePreference]);
 
   useEffect(() => {
     window.localStorage.setItem(OUTPUT_LANGUAGE_STORAGE_KEY, preferredOutputLanguage);
@@ -822,12 +865,12 @@ export const App = () => {
   };
 
   return (
-    <div className="min-h-screen bg-white text-ink font-sans antialiased">
+    <div className="min-h-screen bg-canvas text-ink font-sans antialiased">
       <main className="flex-1 h-screen relative overflow-hidden">
         {loading && progress.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center space-y-6">
-            <div className="w-16 h-16 border border-black/[0.05] bg-black/[0.01] flex items-center justify-center animate-pulse">
-               <Loader2 className="w-6 h-6 text-black/10 animate-spin" />
+            <div className="w-16 h-16 border border-reverse/[0.05] bg-reverse/[0.01] flex items-center justify-center animate-pulse">
+               <Loader2 className="w-6 h-6 text-reverse/10 animate-spin" />
             </div>
             <p className="text-[10px] font-black tracking-[0.5em] text-ink/20 uppercase">建立知识引擎连接...</p>
           </div>
@@ -862,11 +905,11 @@ export const App = () => {
                 </div>
               )}
               {view === "collect" && (
-                <div className="flex h-screen bg-white overflow-hidden">
+                <div className="flex h-screen bg-canvas overflow-hidden">
                   {/* Left: Noir Aside */}
-                  <aside className="w-[320px] bg-white border-r border-black/[0.05] flex flex-col shrink-0">
+                  <aside className="w-[320px] bg-canvas border-r border-reverse/[0.05] flex flex-col shrink-0">
                     <header className="px-10 pt-10 pb-6">
-                       <div className="flex items-center gap-3 text-[9px] font-black uppercase tracking-[0.4em] text-ink/20">
+                       <div className="flex items-center gap-3 text-[9px] font-black uppercase tracking-[0.4em] text-ink/45">
                          <span>采集工程</span>
                          <span className="text-ink/10">|</span>
                          <span>STATION</span>
@@ -875,17 +918,14 @@ export const App = () => {
                     </header>
 
                     {/* New Task Command */}
-                    <div className="px-8 pb-8 space-y-5 border-b border-black/[0.03] mb-6">
+                    <div className="px-8 pb-8 space-y-5 border-b border-reverse/[0.03] mb-6">
                       <div className="space-y-4">
-                        <div className="px-1">
-                          <label className="text-[9px] font-black text-ink/20 uppercase tracking-[0.3em]">发起新课题</label>
-                        </div>
-                        <div className="relative group">
+                        <div className="relative group mt-2">
                           <input
                             value={collectQuery}
                             onChange={(e) => setCollectQuery(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && handleCollect()}
-                            className="w-full h-10 bg-black/[0.01] border-b border-black/10 focus:border-black py-2 pl-1 pr-4 text-[13px] font-bold transition-all outline-none placeholder:text-ink/5 tracking-tight uppercase"
+                            className="w-full h-11 bg-reverse/[0.015] border border-reverse/5 focus:border-reverse py-2 px-4 text-[13px] font-bold transition-all outline-none placeholder:text-ink/20 tracking-tight uppercase rounded-xl"
                             placeholder="输入研究课题关键词..."
                           />
                         </div>
@@ -893,7 +933,7 @@ export const App = () => {
                           <select
                             value={collectProvider}
                             onChange={(e) => setCollectProvider(e.target.value as "web-search-api" | "grok-search")}
-                            className="flex-1 h-9 bg-transparent border border-black/10 text-[10px] font-black uppercase tracking-widest px-3 outline-none cursor-pointer hover:bg-black/[0.02] transition-all appearance-none"
+                            className="flex-1 h-10 bg-transparent border border-reverse/10 text-[10px] font-black uppercase tracking-widest px-4 outline-none cursor-pointer hover:bg-reverse/[0.02] transition-all appearance-none rounded-xl"
                           >
                             <option value="grok-search">Grok 智搜引擎</option>
                             <option value="web-search-api">全网研究接口</option>
@@ -901,23 +941,20 @@ export const App = () => {
                           <button
                             disabled={creatingCaptureJob || !collectQuery.trim()}
                             onClick={handleCollect}
-                            className="h-9 w-9 bg-black text-white flex items-center justify-center transition-all active:scale-90 disabled:opacity-20"
+                            className="h-10 w-10 bg-reverse text-reverse-text flex items-center justify-center transition-all active:scale-90 disabled:opacity-20 rounded-xl"
                           >
                             {creatingCaptureJob ? <Loader2 className="w-4 h-4 animate-spin"/> : <PlusCircle className="w-4 h-4"/>}
                           </button>
                         </div>
                         
-                        <div className="bg-black/[0.015] border border-black/[0.03] p-4 space-y-3">
+                        <div className="bg-reverse/[0.015] border border-reverse/[0.03] p-4 space-y-3 rounded-xl">
                            <div className="flex items-center justify-between">
-                              <span className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">当前配置</span>
-                              <Settings className="w-3 h-3 text-ink/10" />
+                              <span className="text-[9px] font-black text-ink/40 uppercase tracking-[0.2em]">当前配置</span>
+                              <Settings className="w-3 h-3 text-ink/20" />
                            </div>
-                           <div className="text-[12px] font-bold text-ink/80 flex items-center justify-between">
+                           <div className="text-[12px] font-bold text-ink/80 flex items-center justify-between pb-1">
                               <span>输出语言</span>
                               <span>{getOutputLanguageLabel(preferredOutputLanguage)}</span>
-                           </div>
-                           <div className="text-[10px] font-bold text-ink/40 leading-relaxed">
-                              搜索优先匹配英文高质量信源。
                            </div>
                         </div>
                       </div>
@@ -945,12 +982,12 @@ export const App = () => {
                                   void fetchCaptureJobs(job.id, true);
                                 }}
                                 className={cn(
-                                  "w-full text-left px-6 py-4 transition-all relative group mb-0.5",
-                                  selectedCaptureJobId === job.id ? "bg-black/[0.03]" : "hover:bg-black/[0.015]"
+                                  "w-full text-left px-6 py-4 transition-all relative group mb-0.5 rounded-xl",
+                                  selectedCaptureJobId === job.id ? "bg-reverse/[0.03]" : "hover:bg-reverse/[0.015]"
                                 )}
                               >
                                 {selectedCaptureJobId === job.id && (
-                                  <motion.div layoutId="job-pill" className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-6 bg-black z-10" />
+                                  <motion.div layoutId="job-pill" className="absolute left-1.5 top-1/2 -translate-y-1/2 w-[2px] h-4 bg-reverse z-10 rounded-full" />
                                 )}
                                 <div className="flex items-center justify-between gap-3">
                                   <div className="min-w-0">
@@ -960,13 +997,13 @@ export const App = () => {
                                     )}>
                                       {job.query}
                                     </h4>
-                                    <div className="flex items-center gap-3 mt-2 font-black text-[9px] tracking-widest text-ink/10 uppercase">
+                                    <div className="flex items-center gap-3 mt-2 font-black text-[9px] tracking-widest text-ink/30 uppercase">
                                       <span>{captureStatusLabel[job.status]}</span>
                                       <span>•</span>
                                       <span>{job.provider.split('-')[0]}</span>
                                     </div>
                                   </div>
-                                  {job.status === 'processing' && <Loader2 className="w-3 h-3 animate-spin text-ink/20" />}
+                                  {job.status === 'processing' && <Loader2 className="w-3 h-3 animate-spin text-ink/40" />}
                                 </div>
                               </button>
                             ))
@@ -977,10 +1014,10 @@ export const App = () => {
                   </aside>
 
                   {/* Center: Command Center */}
-                  <main className="flex-1 bg-white overflow-y-auto relative custom-scrollbar">
+                  <main className="flex-1 bg-canvas overflow-y-auto relative custom-scrollbar">
                     {selectedCaptureJob ? (
                       <div className="px-16 pt-12 pb-40">
-                        <header className="flex items-end justify-between gap-12 pb-10 border-b border-black/[0.05] mb-12">
+                        <header className="flex items-end justify-between gap-12 pb-10 border-b border-reverse/[0.05] mb-12">
                           <div className="space-y-6 min-w-0">
                              <div className="text-[10px] font-black text-ink/20 uppercase tracking-[0.5em]">ACTIVE RESEARCH JOB</div>
                              <h2 className="text-[36px] font-bold text-ink leading-tight tracking-tight uppercase">
@@ -997,14 +1034,14 @@ export const App = () => {
                              <button
                                 disabled={!canStartReading || startingCaptureProcessing}
                                 onClick={handleStartReading}
-                                className="px-10 py-3 bg-black text-white text-[11px] font-black uppercase tracking-[0.4em] transition-all hover:translate-y-[-2px] hover:shadow-[0_10px_30px_rgba(0,0,0,0.15)] disabled:opacity-10"
+                                className="px-10 py-3 bg-reverse text-reverse-text text-[11px] font-black uppercase tracking-[0.4em] transition-all hover:translate-y-[-2px] hover:shadow-[0_10px_30px_rgba(0,0,0,0.15)] disabled:opacity-10 rounded-xl"
                               >
                                 {startingCaptureProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : "启动知识流引擎"}
                               </button>
 
                               {activeOperation && (
                                 <div className="flex items-center gap-3 text-right">
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-black/40" />
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-reverse/40" />
                                   <div className="text-[10px] font-black text-ink/30 tracking-[0.2em] uppercase">
                                     {activeOperation.detail}
                                   </div>
@@ -1016,58 +1053,56 @@ export const App = () => {
                         <section className="space-y-12">
                           {/* Stages Analysis */}
                           <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] gap-8">
-                             <div className="bg-black/[0.015] border border-black/[0.03] p-8">
+                             <div className="bg-reverse/[0.015] border border-reverse/[0.03] p-8 rounded-2xl">
                                 <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 mb-8">流水线阶段分布</div>
                                 <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                                   {stageBreakdown.stages.map((stage) => (
                                     <div key={stage.stage} className="space-y-3">
-                                      <div className="text-[9px] font-black uppercase tracking-[0.2em] text-ink/15 truncate">
+                                      <div className="text-[9px] font-black uppercase tracking-[0.2em] text-ink/40 truncate">
                                         {pendingStageLabel[stage.stage]}
                                       </div>
                                       <div className="text-[28px] font-bold text-ink tracking-tighter tabular-nums flex items-baseline">
-                                        {stage.percent}<span className="text-[11px] font-black text-ink/10 ml-0.5">%</span>
+                                        {stage.percent}<span className="text-[11px] font-black text-ink/25 ml-0.5">%</span>
                                       </div>
-                                      <div className="text-[9px] font-black text-ink/20 uppercase tracking-widest">{stage.count} 条记录</div>
+                                      <div className="text-[9px] font-black text-ink/45 uppercase tracking-widest">{stage.count} 条记录</div>
                                     </div>
                                   ))}
                                 </div>
                              </div>
 
-                             <div className="border border-black/[0.05] p-8 flex flex-col justify-between">
+                             <div className="border border-reverse/[0.05] p-8 flex flex-col justify-between rounded-2xl">
                                 <div>
-                                   <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 mb-4">异常/阻塞节点</div>
+                                   <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/40 mb-4">异常/阻塞节点</div>
                                    <div className="text-[32px] font-bold text-ink/80 tracking-tighter tabular-nums">
                                       {sources.filter(s => s.skipped).length + stageBreakdown.failedCount}
                                    </div>
                                 </div>
-                                <p className="text-[10px] leading-relaxed text-ink/30 font-bold uppercase tracking-widest">跳过的低质或敏感信源不会再次进入执行循环。</p>
                              </div>
                           </div>
 
                           {/* Task Table */}
                           <div className="space-y-6">
-                            <div className="flex items-center justify-between px-2">
-                               <h3 className="text-[10px] font-black text-ink/20 uppercase tracking-[0.5em]">采集研究详细清单</h3>
+                            <div className="flex items-center justify-end px-2">
                                <div className="text-[10px] font-black text-ink/10 uppercase tracking-widest">{unifiedDisplayItems.length} ITEMS</div>
                             </div>
 
-                            <div className="border border-black/[0.05]">
-                               <header className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-6 px-10 h-10 border-b border-black/[0.05] text-[9px] font-black text-ink/20 uppercase tracking-[0.3em]">
+                            <div className="border border-reverse/[0.05] rounded-2xl overflow-hidden">
+                               <header className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-6 px-10 h-10 border-b border-reverse/[0.05] text-[9px] font-black text-ink/35 uppercase tracking-[0.3em]">
                                  <div className="text-center">状态</div>
                                  <div>实体 / 来源详情</div>
                                  <div className="text-center">链接</div>
                                  <div>反馈说明</div>
                                </header>
 
-                               <div className="bg-white">
+                               <div className="bg-canvas">
                                   {unifiedDisplayItems.length === 0 ? (
-                                    <div className="py-32 text-center opacity-5">
+                                    <div className="py-32 text-center opacity-10">
                                        <FolderTree className="w-12 h-12 mx-auto mb-4" />
                                        <div className="text-[11px] font-black uppercase tracking-[1em]">IDLE</div>
                                     </div>
                                   ) : (
                                     unifiedDisplayItems.map((item) => (
-                                      <div key={item.id} className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-6 px-10 min-h-[44px] border-b border-black/[0.02] last:border-0 hover:bg-black/[0.015] transition-colors group">
+                                      <div key={item.id} className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-6 px-10 min-h-[44px] border-b border-reverse/[0.02] last:border-0 hover:bg-reverse/[0.015] transition-colors group mx-2 my-1 rounded-xl">
                                          <div className="flex justify-center">
                                             {item.skipped ? (
                                                <MoreHorizontal className="w-4 h-4 text-ink/10" />
@@ -1076,9 +1111,9 @@ export const App = () => {
                                             ) : item.status === "reading" || item.status === "extracting" || activeOperation?.itemId === item.id ? (
                                                <Loader2 className="w-3.5 h-3.5 animate-spin text-ink/40" />
                                             ) : item.status === "completed" ? (
-                                               <CheckCircle2 className="w-3.5 h-3.5 text-black" />
+                                               <CheckCircle2 className="w-3.5 h-3.5 text-reverse" />
                                             ) : (
-                                               <div className="w-1 h-1 rounded-full bg-black/10 transition-transform group-hover:scale-150" />
+                                               <div className="w-1 h-1 rounded-full bg-reverse/10 transition-transform group-hover:scale-150" />
                                             )}
                                          </div>
 
@@ -1093,13 +1128,13 @@ export const App = () => {
 
                                          <div className="flex justify-center">
                                             {item.sourceUrl ? (
-                                              <a href={item.sourceUrl} target="_blank" rel="noreferrer" className="p-2 border border-transparent hover:border-black/10 hover:bg-white text-ink/10 hover:text-black transition-all">
+                                              <a href={item.sourceUrl} target="_blank" rel="noreferrer" className="p-2 border border-transparent hover:border-reverse/10 hover:bg-canvas text-ink/30 hover:text-reverse transition-all rounded-lg">
                                                  <ArrowUpRight className="w-3.5 h-3.5" />
                                               </a>
-                                            ) : <span className="text-[9px] font-black text-ink/5">--</span>}
+                                            ) : <span className="text-[9px] font-black text-ink/10">--</span>}
                                          </div>
 
-                                         <div className="text-[11px] font-bold tracking-tight text-ink/30 truncate">
+                                         <div className="text-[11px] font-bold tracking-tight text-ink/60 truncate">
                                             {item.error ? "执行异常" : (item.kind === "source" ? sourceStatusLabel[item.status as CaptureSourceStatus] : pendingItemStatusLabel[item.status as CapturePendingItemStatus])}
                                          </div>
                                       </div>
@@ -1112,11 +1147,11 @@ export const App = () => {
                       </div>
                     ) : (
                       <div className="h-full flex flex-col items-center justify-center p-20 animate-in fade-in duration-1000">
-                        <div className="w-24 h-24 border border-black/[0.05] bg-black/[0.01] flex items-center justify-center mb-10">
-                           <Zap className="w-8 h-8 text-ink/5" />
+                        <div className="w-24 h-24 border border-reverse/[0.05] bg-reverse/[0.01] flex items-center justify-center mb-10 rounded-2xl">
+                           <Zap className="w-8 h-8 text-ink/20" />
                         </div>
                         <h3 className="text-[20px] font-bold text-ink tracking-tight">未选择采集任务</h3>
-                        <p className="text-ink/20 text-[11px] mt-4 font-black uppercase tracking-[0.4em]">请在左侧列表选择研究课题以查看流水线进度</p>
+                        <p className="text-ink/45 text-[11px] mt-4 font-black uppercase tracking-[0.4em]">请在左侧列表选择研究课题以查看流水线进度</p>
                       </div>
                     )}
                   </main>
@@ -1124,7 +1159,7 @@ export const App = () => {
               )}
               {view === "settings" && (
                 <div className="h-full overflow-y-auto custom-scrollbar px-16 py-12 max-w-4xl mx-auto">
-                  <header className="space-y-6 pb-12 border-b border-black/[0.05]">
+                  <header className="space-y-6 pb-12 border-b border-reverse/[0.05]">
                     <div className="text-[10px] font-black uppercase tracking-[0.5em] text-ink/20">System Preferences</div>
                     <h1 className="text-[42px] font-bold tracking-tighter text-ink uppercase leading-none">系统偏好设置</h1>
                     <p className="text-[13px] leading-relaxed text-ink/40 font-medium">定制 AI 的行为逻辑、输出语言规范以及采集引擎的并发负载分布。</p>
@@ -1141,18 +1176,18 @@ export const App = () => {
                               className={cn(
                                 "flex items-start gap-6 p-8 border transition-all text-left group",
                                 preferredOutputLanguage === option.value
-                                  ? "bg-black border-black text-white"
-                                  : "bg-white border-black/[0.05] hover:bg-black/[0.01] text-ink"
+                                  ? "bg-reverse border-reverse text-reverse-text"
+                                  : "bg-canvas border-reverse/[0.05] hover:bg-reverse/[0.01] text-ink"
                               )}
                             >
                                <div className={cn("w-5 h-5 rounded-full border flex items-center justify-center mt-1 shrink-0", 
-                                 preferredOutputLanguage === option.value ? "border-white" : "border-black/20")}>
-                                  {preferredOutputLanguage === option.value && <div className="w-2 h-2 bg-white rounded-full" />}
+                                 preferredOutputLanguage === option.value ? "border-canvas" : "border-reverse/20")}>
+                                  {preferredOutputLanguage === option.value && <div className="w-2 h-2 bg-canvas rounded-full" />}
                                </div>
                                <div className="space-y-2">
                                   <div className="text-[16px] font-bold uppercase tracking-tight">{option.label}</div>
                                   <div className={cn("text-[11px] leading-relaxed font-medium uppercase tracking-widest", 
-                                    preferredOutputLanguage === option.value ? "text-white/40" : "text-ink/30")}>
+                                    preferredOutputLanguage === option.value ? "text-reverse-text/40" : "text-ink/30")}>
                                     {option.description}
                                   </div>
                                </div>
@@ -1164,24 +1199,54 @@ export const App = () => {
                      <section className="space-y-8">
                         <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">平衡引擎配置 / LOAD BALANCING</div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                           <div className="border border-black/[0.05] p-8 space-y-6">
+                           <div className="border border-reverse/[0.05] p-8 space-y-6">
                               <div className="text-[11px] font-black uppercase tracking-[0.3em] text-ink/30">信源检索上限</div>
                               <div className="text-[42px] font-bold text-ink tracking-tighter">{collectSearchLimit}</div>
                               <input
                                 type="range" min={1} max={100} value={collectSearchLimit}
                                 onChange={(e) => updateCollectSearchLimit(Number(e.target.value))}
-                                className="w-full accent-black h-1"
+                                className="w-full accent-reverse h-1"
                               />
                            </div>
-                           <div className="border border-black/[0.05] p-8 space-y-6">
+                           <div className="border border-reverse/[0.05] p-8 space-y-6">
                               <div className="text-[11px] font-black uppercase tracking-[0.3em] text-ink/30">AI 算力并发控制</div>
                               <div className="text-[42px] font-bold text-ink tracking-tighter">{collectAiConcurrency}</div>
                               <input
                                 type="range" min={1} max={8} value={collectAiConcurrency}
                                 onChange={(e) => updateCollectAiConcurrency(Number(e.target.value))}
-                                className="w-full accent-black h-1"
+                                className="w-full accent-reverse h-1"
                               />
                            </div>
+                        </div>
+                     </section>
+
+                     <section className="space-y-8">
+                        <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/40">视觉主题 / APPEARANCE</div>
+                        <div className="grid gap-4">
+                          {THEME_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              onClick={() => setThemePreference(option.value)}
+                              className={cn(
+                                "flex items-start gap-6 p-8 border transition-all text-left group rounded-xl",
+                                themePreference === option.value
+                                  ? "bg-reverse border-reverse text-reverse-text"
+                                  : "bg-canvas border-reverse/[0.05] hover:bg-reverse/[0.01] text-ink"
+                              )}
+                            >
+                               <div className={cn("w-5 h-5 rounded-full border flex items-center justify-center mt-1 shrink-0", 
+                                 themePreference === option.value ? "border-reverse-text" : "border-reverse/20")}>
+                                  {themePreference === option.value && <div className="w-2 h-2 bg-reverse-text rounded-full" />}
+                               </div>
+                               <div className="space-y-2">
+                                  <div className="text-[16px] font-bold uppercase tracking-tight">{option.label}</div>
+                                  <div className={cn("text-[11px] leading-relaxed font-medium uppercase tracking-widest", 
+                                    themePreference === option.value ? "text-reverse-text/50" : "text-ink/40")}>
+                                    {option.description}
+                                  </div>
+                               </div>
+                            </button>
+                          ))}
                         </div>
                      </section>
                   </div>
@@ -1193,8 +1258,8 @@ export const App = () => {
       </main>
 
       {/* Floating Dock - Monochrome Edition */}
-      <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-[100]">
-        <div className="flex items-center bg-white border border-black/10 p-1.5 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.1)] gap-1">
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100]">
+        <div className="flex items-center bg-canvas border border-reverse/10 p-1.5 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.1)] gap-1">
           <DockItem 
             icon={LayoutDashboard} label="概览" 
             active={view === "dashboard"} onClick={() => setView("dashboard")} 
@@ -1211,7 +1276,7 @@ export const App = () => {
             icon={Zap} label="采集" 
             active={view === "collect"} onClick={() => setView("collect")} 
           />
-          <div className="w-px h-6 bg-black/5 mx-2" />
+          <div className="w-px h-6 bg-reverse/5 mx-2" />
           <DockItem 
             icon={Settings} label="系统" 
             active={view === "settings"} onClick={() => setView("settings")} 

@@ -1,181 +1,128 @@
-# Recall
+<div align="center">
 
-Recall 是一个基于 Bun monorepo 的知识闭环系统，定位为 Anki + Perplexity + NotebookLM + Obsidian 的融合体。
+# ✨ Recall Station
 
-系统目标：
+**基于 MCP 的全网原子事实提炼与知识闭环工作站**
+</br>
+<em>A Closed-Loop Knowledge Station Combining Anki, Perplexity, NotebookLM, and Obsidian</em>
 
-- 把全网知识封装成 `truth`，也就是原子事实，作为最小知识单元。
-- 通过 Web Search + RAG + AI + 个性化推荐算法形成知识闭环。
-- 用图谱进度和 AI 主动推荐帮助用户在 80 天内把任意领域掌握度从 0 拉到 80。
+[![Bun](https://img.shields.io/badge/Bun-Runtime-black?style=flat-square&logo=bun)](https://bun.sh/)
+[![React](https://img.shields.io/badge/React-Frontend-61DAFB?style=flat-square&logo=react&logoColor=black)](https://reactjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
-## Monorepo 结构
+</div>
 
-- `apps/web`: React + UnoCSS 前端。全部使用 UnoCSS attributify，不走 `style.css`。
-- `apps/api`: Elysia + SQLite 后端，负责 truth 采集、标签分类、RAG 搜索、推荐与图谱接口。
-- `apps/mcp-server`: 官方 MCP TypeScript SDK 的 stdio server，原生暴露 Recall 的知识工具。
-- `packages/domain`: 核心领域模型与可测试算法，包括去重、三级标签路径选择、图谱进度与推荐排序。
 
-## 核心技术方案
+**Recall** 是一个由 Bun monorepo 驱动的新一代智能知识工作站。它彻底摒弃了传统笔记软件的被动收藏模式，将任何领域的全网碎片知识深度重构提炼为**原子事实（Truth）**。通过自动化构建的三级分类路标与主动图谱推荐，Recall 旨在为你提供一个“不需要整理的第二大脑”，帮助你在 80 天内把任意领域的掌握度无痛从 0 拉升到 80。
 
-### Truth 采集流水线
+> 💡 **你需要做的**：输入任意感兴趣的研究课题（如："Vite 底层原理" 或 "宏观经济学框架"）。</br>
+> 🧠 **Recall 给你的**：经过自动化深度检索、AI 脱水提纯的系统性“事实清单”，以及为你量身动态生成的知识索引树与复习排序。
 
-1. 通过 `web-search-api` 或 `grok-search` 获取搜索结果。
-2. 对命中的网页执行正文提取，使用 `Readability + linkedom` 抽出主内容。
-3. 把页面文本送入兼容 OpenAI 的 Chat API，抽取 `truth list`。
-4. 对 truth 去重，保留证据更强、置信度更高的版本。
-5. 用三级 taxonomy 给每条 truth 打标签。
-6. 将 truth、tag、学习信号落进 SQLite。
-7. 使用本地 embedding 模型构建 truth 向量，驱动语义搜索和 RAG 检索。
+通过无缝整合 Web Search、局部向量提取（RAG）、AI 内容清洗与个性化学习间隔（Spaced Repetition），实现了**搜集、理解、反刍、内化**的全景式知识流闭环。
 
-### 三级标签分类算法
+---
 
-这里没有做 fallback。
+## 📸 沉浸式流体界面
 
-分类算法是三段式：
+<div align="center">
+<table>
+<tr>
+<td><img src="https://via.placeholder.com/600x380/F5F5F5/1A1A1A?text=STATION:+Knowledge+Pipeline" alt="Station View" width="100%"/></td>
+<td><img src="https://via.placeholder.com/600x380/0A0A0A/E5E5E5?text=REPOSITORY:+Dynamic+Taxonomy" alt="Taxonomy View" width="100%"/></td>
+</tr>
+<tr>
+<td align="center"><b>采集调度中枢</b>: 动态掌控全网提取进度</td>
+<td align="center"><b>归因拓扑与图谱</b>: 全局概念网络与事实检索</td>
+</tr>
+</table>
+</div>
 
-1. `AI taxonomy planning`
-   给定用户输入领域，LLM 先生成 1 级大方向、2 级细分领域、3 级可执行方向的 taxonomy 树。
-2. `Embedding retrieval`
-   使用本地多语种 embedding 模型，把 truth 和 taxonomy 节点全部向量化，先做候选路径召回。
-3. `LLM rerank`
-   把 top 路径集交给 LLM 精排，只允许从候选集合中选一个最终路径。
+## ⚙️ 核心技术引擎
 
-这套设计的好处是：
+### 1. Truth 纯化与采集流水线
+1. 🕸 **信息捕获**：通过 `web-search-api` 或 `grok-search` 进行实时搜索。
+2. 📖 **正文提纯**：利用 `Readability` + `linkedom` 剥离广告噪音，抽出沉浸式主内容。
+3. 🔬 **降维裂变**：将页面文本送入 LLM 执行大刀阔斧的“脱水”，抽取成独立完整的 `Truth`（事实）原子。
+4. ⚔️ **去重对抗**：将新知识与已有知识碰撞比对，只留存证据链最强、最丰满的版本。
+5. 🏷️ **归档上架**：运用三级 Taxonomy 算法为每一个原子事实寻找坐标，存埋入 SQLite。
+6. 🌌 **向量激活**：本地运行 `Xenova` 模型计算高维映射，引爆后续所有的语义查询和 RAG 生成。
 
-- taxonomy 不是硬编码死目录，能随领域动态扩展。
-- 召回靠 embedding，解决同义表达和跨语种问题。
-- 精排靠 LLM，解决纯向量相似度不够细的问题。
+### 2. 动态生长式三级标签 (Taxonomy)
+我们拒绝死板写死的根目录模式：
+- **AI 战略规划**：给定输入，LLM 自动推演拆解 1级体系 -> 2级分支 -> 3级落脚点。
+- **混合向量召回**：本地并行 Embedding（`Xenova/paraphrase-multilingual-MiniLM-L12-v2`）抹平多语种与同义词差异，精准吸纳。
+- **LLM 再平衡**：Top 碰撞集交由 LLM 精排决策，把事实挂靠到分类树上最严丝合缝的树冠。
 
-### 推荐与进度
+### 3. 主动推荐与遗忘曲线
+- **Tag 刻度**：每个标签领域的进度由其下属所有 Truth 掌握度的分形递归计算得出。
+- **推荐排序法则**：智能综合评估 Tag 知识缺口、单点 Truth 掌握度以及触发复习记忆时点。
+- 不用去搜索知识，让知识主动寻找你。
 
-- tag 进度来自该 tag 覆盖 truth 的平均掌握度。
-- 推荐排序综合考虑：
-  - tag 缺口
-  - 当前 truth 的掌握缺口
-  - 是否到达复习时点
-- 前端会把所有现存 tag 的进度绘制出来，并且在推荐页允许直接记录学习信号。
+---
 
-## Provider 约定
+## 🏗 Monorepo 库结构
 
-### AI Chat Gateway
+系统底层基于干净利落的领域驱动设计（DDD）：
 
-后端使用兼容 OpenAI 的 `/chat/completions` 接口做：
+| 包名 | 职责栈 |
+|------|-------------|
+| `apps/web` | **前端触点**：React + UnoCSS 驱动，Noir/Luxury 极简风格呈现的高频动态交互壳 |
+| `apps/api` | **后端引擎**：Elysia + SQLite 驱动，跑通所有的 truth 洗筹、标签拆解、RAG 检索请求 |
+| `apps/mcp-server` | **协议代理**：基于官方 MCP TypeScript SDK，原生暴露 Recall 的所有底层资产给外部大模型环境 |
+| `packages/domain` | **神经中枢**：高度可复用的核心算法（去重矩阵、路径规划策略、记忆热度衰减公式等） |
 
-- taxonomy planning
-- truth extraction
-- taxonomy rerank
+---
 
-你给的网关可以直接用在这里。
+## 🔌 拓扑 Provider 协议
 
-### Embedding
+**1. 一次配置，终身适用 AI Chat Gateway**  
+完全兼容标准 OpenAI 的 `/chat/completions` API，用于各类大体量提纯（Planning、Extraction、Rerank）。
 
-embedding 不依赖你给的网关，而是本地跑 `Xenova/paraphrase-multilingual-MiniLM-L12-v2`。
+**2. 本地原生 Embeddings**  
+系统不仅是为了保护隐私，也是为了保持本地分类决策的高频极速调用能力，内嵌原生模型而非强依赖外部网关。
 
-这是刻意的架构选择，不是 fallback。
-原因是当前提供的模型列表没有直接暴露 embedding 模型，但系统又必须原生支持语义搜索与 embedding 分类。
+**3. Grok Search / Web API**  
+基于 `grok-4.20-beta` （或常规代理）深度约束模型幻觉，强制输出结构化 `{"results":[...]}` 信息流，严格摒弃冗长空泛的内容。
 
-### Web Search API
+---
 
-`web-search-api` provider 约定请求/响应为：
+## 🚀 启动向导 (Quick Start)
 
-请求：
+### 环境配置
 
-```json
-{
-  "query": "React hooks",
-  "limit": 5
-}
-```
+参考项目内的 `.env.example` 标准：
+- `apps/api/.env`
+- `apps/web/.env`
+- `apps/mcp-server/.env`
 
-响应：
-
-```json
-{
-  "results": [
-    {
-      "title": "Title",
-      "url": "https://example.com",
-      "snippet": "Summary"
-    }
-  ]
-}
-```
-
-### Grok Search
-
-`grok-search` 现在走兼容 OpenAI 的 Chat Completions 网关，默认指向 `https://ai.huan666.de/v1`，并使用 `grok-4.20-beta` 通过提示词执行实时联网搜索。模型被强约束为只返回 `{"results":[...]}` 这种原始 JSON，服务端会做严格解析，拒绝散文式输出。
-
-## 环境变量
-
-参考：
-
-- [apps/api/.env.example](/E:/Codespace/Recall/apps/api/.env.example)
-- [apps/web/.env.example](/E:/Codespace/Recall/apps/web/.env.example)
-- [apps/mcp-server/.env.example](/E:/Codespace/Recall/apps/mcp-server/.env.example)
-
-## 启动
-
-安装依赖：
+### 安装部署
 
 ```bash
+# 安装所有的依附依赖
 bun install
-```
 
-运行测试：
-
-```bash
+# 执行严格的数据层校验与逻辑跑通
 bun test
-```
 
-类型检查：
-
-```bash
+# 前后端联合类型自检
 bun run typecheck
 ```
 
-构建：
+### 一键拉起
 
 ```bash
-bun run build
-```
-
-启动 API：
-
-```bash
-bun run dev:api
-```
-
-启动前端：
-
-```bash
-bun run dev:web
-```
-
-一键启动完整开发环境：
-
-```bash
+# 全功能联动：一键并发启动 apps/web 与 apps/api
 bun dev
 ```
 
-这会并发启动：
+> **注意针对 MCP 服务开发**：  
+> MCP server 基于 Stdio transport 设计协议通道，不要连带进入 `bun dev` 的 HTTP 流内。  
+> 必须单独拉起被客户端接托管：`bun run dev:mcp`
 
-- `apps/web`
-- `apps/api`
+---
 
-启动 MCP Server：
-
-```bash
-bun run dev:mcp
-```
-
-`dev:mcp` 不并入 `bun dev`，因为当前 MCP server 走的是 stdio transport，而不是 HTTP transport。它需要被 MCP client 进程接管标准输入输出，作为独立进程使用才是正确形态。
-
-## MCP 工具
-
-当前 MCP server 暴露三个原生工具：
-
-- `knowledge.collect`
-- `truth.search`
-- `tag.progress`
-
-它们与 API 共用同一套 SQLite 数据和 truth pipeline。
+## 🤖 MCP 赋能
+系统现已基于最新的 Model Context Protocol (MCP)，将这套精妙的引擎直接作为工具抛给未来所有兼容的智体使用：
+- `knowledge.collect`  *(搜集清洗代理)*
+- `truth.search` *(高维向量唤醒)*
+- `tag.progress` *(刻度查询接口)*
