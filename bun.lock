@@ -39,6 +39,8 @@
       "name": "@recall/web",
       "version": "0.0.0",
       "dependencies": {
+        "@fontsource-variable/inter": "^5.2.8",
+        "@fontsource/maple-mono": "^5.2.6",
         "@recall/domain": "workspace:*",
         "clsx": "^2.1.1",
         "framer-motion": "^12.38.0",
@@ -176,6 +178,10 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.27.4", "https://registry.npmmirror.com/@esbuild/win32-ia32/-/win32-ia32-0.27.4.tgz", { "os": "win32", "cpu": "ia32" }, "sha512-DAyGLS0Jz5G5iixEbMHi5KdiApqHBWMGzTtMiJ72ZOLhbu/bzxgAe8Ue8CTS3n3HbIUHQz/L51yMdGMeoxXNJw=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.27.4", "https://registry.npmmirror.com/@esbuild/win32-x64/-/win32-x64-0.27.4.tgz", { "os": "win32", "cpu": "x64" }, "sha512-+knoa0BDoeXgkNvvV1vvbZX4+hizelrkwmGJBdT17t8FNPwG2lKemmuMZlmaNQ3ws3DKKCxpb4zRZEIp3UxFCg=="],
+
+    "@fontsource-variable/inter": ["@fontsource-variable/inter@5.2.8", "https://registry.npmmirror.com/@fontsource-variable/inter/-/inter-5.2.8.tgz", {}, "sha512-kOfP2D+ykbcX/P3IFnokOhVRNoTozo5/JxhAIVYLpea/UBmCQ/YWPBfWIDuBImXX/15KH+eKh4xpEUyS2sQQGQ=="],
+
+    "@fontsource/maple-mono": ["@fontsource/maple-mono@5.2.6", "https://registry.npmmirror.com/@fontsource/maple-mono/-/maple-mono-5.2.6.tgz", {}, "sha512-+VAD7z8nyTkaiz2/Ww639Z5Kp/YJIL4dNMQxydqSMafNb5nKxFeoRq6W3g9WJ04IcBjdBmn0dKFNk90lyz7K+w=="],
 
     "@hono/node-server": ["@hono/node-server@1.19.12", "https://registry.npmmirror.com/@hono/node-server/-/node-server-1.19.12.tgz", { "peerDependencies": { "hono": "^4" } }, "sha512-txsUW4SQ1iilgE0l9/e9VQWmELXifEFvmdA1j6WFh/aFPj99hIntrSsq/if0UWyGVkmrRPKA1wCeP+UCr1B9Uw=="],
 

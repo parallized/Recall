@@ -9,6 +9,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource/maple-mono": "^5.2.6",
     "@recall/domain": "workspace:*",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
