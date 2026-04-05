@@ -17,7 +17,9 @@ import {
   CheckCircle2,
   AlertCircle,
   ExternalLink,
-  MoreHorizontal
+  MoreHorizontal,
+  ArrowUpRight,
+  FolderTree
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -303,74 +305,30 @@ const pendingStageByStatus: Record<CapturePendingItemStatus, PendingStageKey> = 
   failed_extract: "failed",
 };
 
-const pendingStageRank: Record<PendingStageKey, number> = {
-  source_read: 0,
-  question_extract: 1,
-  question_bind: 2,
-  embedding: 3,
-  persist: 4,
-  failed: 5,
-};
-
-const primaryPendingStageOrder: Array<Exclude<PendingStageKey, "failed">> = [
-  "source_read",
-  "question_extract",
-  "question_bind",
-  "embedding",
-  "persist",
-];
-
-const activePendingStatuses = new Set<CapturePendingItemStatus>([
-  "reading_source",
-  "extracting_questions",
-  "planning_taxonomy",
-  "classifying_question",
-  "embedding_question",
-  "persisting_question",
-]);
-
 const buildStagePercentages = (counts: Record<PendingStageKey, number>) => {
-  const total = primaryPendingStageOrder.reduce((sum, stage) => sum + counts[stage], 0);
+  const order: Array<Exclude<PendingStageKey, "failed">> = [
+    "source_read",
+    "question_extract",
+    "question_bind",
+    "embedding",
+    "persist",
+  ];
+  
+  const total = order.reduce((sum, stage) => sum + counts[stage], 0);
 
   if (total === 0) {
-    return primaryPendingStageOrder.map((stage) => ({
+    return order.map((stage) => ({
       stage,
       count: 0,
       percent: 0,
     }));
   }
 
-  const base = primaryPendingStageOrder.map((stage) => {
-    const rawPercent = (counts[stage] / total) * 100;
-    return {
-      stage,
-      count: counts[stage],
-      rawPercent,
-      percent: Math.floor(rawPercent),
-      remainder: rawPercent - Math.floor(rawPercent),
-    };
-  });
-
-  let remaining = 100 - base.reduce((sum, item) => sum + item.percent, 0);
-  const sortedByRemainder = [...base].sort((left, right) => right.remainder - left.remainder);
-
-  for (const item of sortedByRemainder) {
-    if (remaining <= 0) {
-      break;
-    }
-
-    item.percent += 1;
-    remaining -= 1;
-  }
-
-  return primaryPendingStageOrder.map((stage) => {
-    const item = base.find((entry) => entry.stage === stage)!;
-    return {
-      stage,
-      count: item.count,
-      percent: item.percent,
-    };
-  });
+  return order.map((stage) => ({
+    stage,
+    count: counts[stage],
+    percent: Math.round((counts[stage] / total) * 100),
+  }));
 };
 
 // --- Components ---
@@ -389,36 +347,31 @@ const DockItem = ({
   <button
     onClick={onClick}
     className={cn(
-      "relative flex items-center px-4 py-2 text-sm font-medium transition-all duration-500 rounded-[16px] group active:scale-95",
+      "relative flex items-center px-5 py-2.5 text-sm font-bold transition-all duration-500 rounded-full group active:scale-95",
       active 
-        ? "bg-ink text-canvas shadow-xl shadow-ink/10" 
-        : "text-steel hover:bg-silver hover:text-ink"
+        ? "bg-black text-white" 
+        : "text-ink/30 hover:bg-black/[0.03] hover:text-ink"
     )}
   >
-    <Icon className={cn("w-4 h-4 transition-transform group-hover:scale-110", active ? "mr-2.5" : "")} />
+    <Icon className={cn("w-4 h-4 transition-transform group-hover:scale-110", active ? "mr-3" : "")} />
     {active && (
       <motion.span 
         initial={{ opacity: 0, width: 0 }}
         animate={{ opacity: 1, width: "auto" }}
         transition={{ duration: 0.4, ease: "circOut" }}
-        className="overflow-hidden whitespace-nowrap"
+        className="overflow-hidden whitespace-nowrap uppercase tracking-widest text-[11px]"
       >
         {label}
       </motion.span>
-    )}
-    {!active && (
-      <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-ink text-canvas text-[10px] px-3 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0 pointer-events-none whitespace-nowrap font-bold tracking-widest shadow-lg">
-        {label}
-      </div>
     )}
   </button>
 );
 
 const Card = ({ children, className, title, extra, compact }: { children: React.ReactNode, className?: string, title?: string, extra?: React.ReactNode, compact?: boolean }) => (
-  <div className={cn("bg-canvas border border-line rounded-[24px] transition-all hover:border-line/80 flex flex-col group/card notion-shadow", compact ? "p-4" : "p-6", className)}>
+  <div className={cn("bg-white border border-black/[0.05] rounded-none transition-all flex flex-col", compact ? "p-4" : "p-8", className)}>
     {(title || extra) && (
-      <div className={cn("flex items-center justify-between", compact ? "mb-3" : "mb-5")}>
-        {title && <h3 className="text-[10px] font-black text-steel uppercase tracking-[0.2em]">{title}</h3>}
+      <div className={cn("flex items-center justify-between", compact ? "mb-4" : "mb-8")}>
+        {title && <h3 className="text-[10px] font-black text-ink/20 uppercase tracking-[0.4em]">{title}</h3>}
         {extra}
       </div>
     )}
@@ -426,83 +379,20 @@ const Card = ({ children, className, title, extra, compact }: { children: React.
   </div>
 );
 
-const StatCard = ({ label, value, sub, color = "accent", compact }: { label: string, value: string | number, sub?: string, color?: string, compact?: boolean }) => (
-  <Card compact={compact} className={cn("hover:bg-fog/50 transition-colors", compact ? "py-4 px-4" : "py-7 px-5")}>
-    <div className={cn("font-black text-steel uppercase tracking-[0.2em]", compact ? "text-[9px] mb-1.5" : "text-[10px] mb-3")}>{label}</div>
-    <div className={cn("font-bold text-ink tracking-tight", compact ? "text-xl" : "text-3xl")}>{value || "-"}</div>
-    {sub && <div className={cn("text-steel font-medium", compact ? "text-[9px] mt-1" : "text-[10px] mt-2")}>{sub}</div>}
+const StatCard = ({ label, value, sub, compact }: { label: string, value: string | number, sub?: string, compact?: boolean }) => (
+  <Card compact={compact} className={cn("hover:bg-black/[0.01] transition-colors")}>
+    <div className={cn("font-black text-ink/20 uppercase tracking-[0.4em]", compact ? "text-[9px] mb-2" : "text-[10px] mb-4")}>{label}</div>
+    <div className={cn("font-bold text-ink tracking-tighter leading-none", compact ? "text-2xl" : "text-4xl")}>{value || "-"}</div>
+    {sub && <div className={cn("text-ink/30 font-bold uppercase tracking-widest", compact ? "text-[8px] mt-2" : "text-[10px] mt-4")}>{sub}</div>}
   </Card>
 );
 
 const StatItem = ({ label, value }: { label: string, value: string | number }) => (
-  <div className="flex items-baseline gap-2.5 px-1 py-1 group/stat">
-    <span className="text-[10px] font-black text-steel/30 uppercase tracking-[0.25em] whitespace-nowrap">{label}</span>
-    <span className="text-[15px] font-bold text-ink/80 tracking-tight">{value}</span>
+  <div className="flex flex-col gap-1 px-1">
+    <span className="text-[9px] font-black text-ink/20 uppercase tracking-[0.3em]">{label}</span>
+    <span className="text-xl font-bold text-ink tracking-tighter">{value}</span>
   </div>
 );
-
-const PendingItem = ({ item, active }: { item: CapturePendingItem; active?: boolean }) => {
-  const getStatusIcon = () => {
-    if (item.error) return <AlertCircle className="w-4 h-4 text-ember" />;
-    if (active) return <Loader2 className="w-4 h-4 text-accent animate-spin" />;
-    if (item.status === "failed_read" || item.status === "failed_extract") 
-      return <AlertCircle className="w-4 h-4 text-ember" />;
-    
-    // Simplistically assuming non-active/non-error are 'completed' or 'pending'
-    const isCompleted = !active && !item.error; 
-    if (isCompleted) return <CheckCircle2 className="w-4 h-4 text-accent" />;
-    
-    return <div className="w-2 h-2 rounded-full bg-steel/30" />;
-  };
-
-  return (
-    <div className={cn(
-      "grid grid-cols-[48px_1fr_120px_1fr] items-center gap-4 px-4 py-3 border-b border-line/40 hover:bg-silver/10 transition-colors group/row",
-      active && "bg-accent/[0.03]"
-    )}>
-      {/* Col 1: Status Icon */}
-      <div className="flex justify-center">
-        {getStatusIcon()}
-      </div>
-
-      {/* Col 2: Title */}
-      <div className="min-w-0">
-        <div className={cn(
-          "text-[13px] font-bold truncate tracking-tight transition-colors",
-          active ? "text-accent" : "text-ink"
-        )}>
-          {item.title || "记录已就绪"}
-        </div>
-      </div>
-
-      {/* Col 3: Link */}
-      <div className="flex items-center justify-center">
-        {item.sourceUrl ? (
-          <a 
-            href={item.sourceUrl} 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="p-1.5 rounded hover:bg-accent/5 text-steel/40 hover:text-accent transition-colors"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
-        ) : (
-          <span className="text-[10px] text-steel/20">--</span>
-        )}
-      </div>
-
-      {/* Col 4: Info */}
-      <div className="min-w-0">
-        <div className={cn(
-          "text-[11px] truncate font-medium",
-          item.error ? "text-ember font-bold" : "text-steel/60"
-        )}>
-          {item.error || item.subtitle || pendingItemStatusLabel[item.status]}
-        </div>
-      </div>
-    </div>
-  );
-};
 
 // --- Main Views ---
 
@@ -511,53 +401,45 @@ const DashboardView = ({ progress }: { progress: TagProgress[] }) => {
   const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6 duration-1000 ease-out py-12 px-12">
-      <header className="mb-6">
-        <h1 className="text-3xl font-bold text-ink tracking-tight mb-3">概览</h1>
-        <div className="flex flex-wrap items-center gap-5 text-steel text-[12px] font-medium opacity-60">
-           <div className="flex items-center">
-            <Calendar className="w-3.5 h-3.5 mr-2 opacity-40" />
-            {today}
-          </div>
-          <div className="flex items-center">
-            <Layers className="w-3.5 h-3.5 mr-2 opacity-40" />
-            {progress.length} 个知识点
-          </div>
-          <div className="flex items-center">
-            <History className="w-3.5 h-3.5 mr-2 opacity-40" />
-            {totalTruths} 条记录
-          </div>
+    <div className="space-y-10 animate-in fade-in duration-1000 ease-out py-10">
+      <header className="flex items-end justify-between border-b border-black/[0.05] pb-10">
+        <div className="space-y-4">
+           <div className="text-[10px] font-black text-ink/20 uppercase tracking-[0.5em]">SYSTEM OVERVIEW</div>
+           <h1 className="text-[42px] font-bold text-ink leading-none tracking-tighter uppercase">仪表盘概览</h1>
+           <div className="flex items-center gap-8 text-ink/30 text-[11px] font-bold uppercase tracking-widest">
+              <div className="flex items-center gap-3"><Calendar className="w-4 h-4 opacity-30" />{today}</div>
+              <div className="flex items-center gap-3"><Layers className="w-4 h-4 opacity-30" />{progress.length} 知识节点</div>
+              <div className="flex items-center gap-3"><History className="w-4 h-4 opacity-30" />{totalTruths} 事实记录</div>
+           </div>
         </div>
       </header>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard compact label="学习进展" value="-" />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+        <StatCard compact label="学习程度" value="-" />
         <StatCard compact label="知识密度" value="-" />
         <StatCard compact label="检索权重" value="-" />
         <StatCard compact label="语义关联" value="-" />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 border-t border-[#efeff1] pt-10">
-        <div className="space-y-6">
-          <div className="flex items-center gap-3 px-2">
-             <div className="h-px bg-[#efeff1] flex-1" />
-             <h3 className="text-[10px] font-black text-steel/40 uppercase tracking-[0.3em]">掌握度分布</h3>
-             <div className="h-px bg-[#efeff1] flex-1" />
-          </div>
-          <div className="h-[280px] bg-[#f8f9fa] rounded-[32px] border border-[#efeff1]/60 flex items-center justify-center">
-             <div className="text-steel/10 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
-          </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-10 border-t border-black/[0.05] pt-12">
+        <div className="space-y-8">
+           <div className="flex items-center gap-4 text-ink/20">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.4em]">掌握度分布</h3>
+              <div className="h-px bg-black/[0.05] flex-1" />
+           </div>
+           <div className="h-[320px] bg-black/[0.01] border border-black/[0.04] flex items-center justify-center">
+              <div className="text-ink/5 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
+           </div>
         </div>
 
-        <div className="space-y-6">
-          <div className="flex items-center gap-3 px-2">
-             <div className="h-px bg-[#efeff1] flex-1" />
-             <h3 className="text-[10px] font-black text-steel/40 uppercase tracking-[0.3em]">采集活跃度</h3>
-             <div className="h-px bg-[#efeff1] flex-1" />
-          </div>
-          <div className="h-[280px] bg-[#f8f9fa] rounded-[32px] border border-[#efeff1]/60 flex items-center justify-center">
-             <div className="text-steel/10 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
-          </div>
+        <div className="space-y-8">
+           <div className="flex items-center gap-4 text-ink/20">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.4em]">采集活跃度</h3>
+              <div className="h-px bg-black/[0.05] flex-1" />
+           </div>
+           <div className="h-[320px] bg-black/[0.01] border border-black/[0.04] flex items-center justify-center">
+              <div className="text-ink/5 text-[10px] font-black tracking-[0.6em] uppercase">SYSTEM_IDLE</div>
+           </div>
         </div>
       </div>
     </div>
@@ -584,9 +466,9 @@ const SearchView = () => {
   };
 
   return (
-    <div className="py-8 px-12 animate-in fade-in slide-in-from-bottom-8 duration-1000 ease-out">
-      <div className="relative group/search">
-        <div className="absolute inset-y-0 left-6 flex items-center pointer-events-none text-steel/30 group-focus-within/search:text-accent transition-colors duration-500">
+    <div className="py-12 animate-in fade-in duration-1000 ease-out max-w-4xl mx-auto">
+      <div className="relative group">
+        <div className="absolute inset-y-0 left-8 flex items-center pointer-events-none text-ink/10 group-focus-within:text-ink/60 transition-colors duration-500">
           <Search className="w-6 h-6" />
         </div>
         <input
@@ -594,35 +476,37 @@ const SearchView = () => {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          placeholder="搜索知识语义链..."
-          className="w-full bg-silver/30 border border-line focus:ring-[12px] focus:ring-accent/5 focus:border-accent/30 rounded-[28px] pl-16 pr-8 py-6 text-ink placeholder:text-steel/20 transition-all duration-500 outline-none text-xl font-medium"
+          placeholder="检索知识语义链条..."
+          className="w-full bg-black/[0.01] border border-black/[0.05] focus:border-black rounded-none pl-20 pr-8 py-8 text-ink placeholder:text-ink/10 transition-all duration-500 outline-none text-2xl font-bold tracking-tight uppercase"
         />
         {loading && (
-          <div className="absolute inset-y-0 right-6 flex items-center">
-            <Loader2 className="w-6 h-6 text-accent animate-spin" />
+          <div className="absolute inset-y-0 right-8 flex items-center">
+            <Loader2 className="w-6 h-6 text-black/20 animate-spin" />
           </div>
         )}
       </div>
 
-      <div className="mt-10 space-y-4">
+      <div className="mt-16 space-y-6">
         {results.map((result, i) => (
           <motion.div
-            initial={{ opacity: 0, scale: 0.98, y: 30 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ delay: i * 0.08, duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: i * 0.05, duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
             key={i}
           >
-            <div className="bg-canvas border border-line rounded-[24px] p-7 group hover:border-accent/20 hover:bg-fog transition-all duration-700 cursor-pointer notion-shadow overflow-hidden relative">
-              <div className="absolute top-0 left-0 w-1.5 h-full bg-accent opacity-0 group-hover:opacity-10 transition-all" />
-              <div className="text-lg text-ink/80 leading-relaxed font-semibold">
-                {result.statement || "未发现结果"}
+            <div className="bg-white border-b border-black/[0.05] p-10 group hover:bg-black/[0.01] transition-all duration-500 cursor-pointer overflow-hidden relative">
+              <div className="text-[17px] text-ink leading-relaxed font-bold tracking-tight">
+                {result.statement}
               </div>
-              <div className="mt-5 flex flex-wrap gap-2.5">
+              <div className="mt-6 flex flex-wrap gap-3">
                 {result.tags?.map((t: string) => (
-                  <span key={t} className="text-[10px] uppercase tracking-widest font-black text-steel bg-silver px-3 py-1.5 rounded-full border border-line/50 transition-colors group-hover:bg-accent/5 group-hover:text-accent group-hover:border-accent/10">
+                  <span key={t} className="text-[10px] uppercase tracking-[0.3em] font-black text-ink/20 border border-black/[0.05] px-4 py-1.5 transition-colors group-hover:text-ink/40 group-hover:border-black/10">
                     {t}
                   </span>
                 ))}
+              </div>
+              <div className="absolute right-10 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-40 transition-all">
+                 <ArrowUpRight className="w-6 h-6" />
               </div>
             </div>
           </motion.div>
@@ -649,12 +533,7 @@ export const App = () => {
     readStoredNumberSetting(READ_CONCURRENCY_STORAGE_KEY, DEFAULT_COLLECT_READ_CONCURRENCY, 1, 8),
   );
   const [collectAiConcurrency, setCollectAiConcurrency] = useState(() =>
-    readStoredNumberSetting(
-      AI_CONCURRENCY_STORAGE_KEY,
-      readStoredNumberSetting(READ_CONCURRENCY_STORAGE_KEY, DEFAULT_COLLECT_AI_CONCURRENCY, 1, 8),
-      1,
-      8,
-    ),
+    readStoredNumberSetting(AI_CONCURRENCY_STORAGE_KEY, DEFAULT_COLLECT_AI_CONCURRENCY, 1, 8),
   );
   const [preferredOutputLanguage, setPreferredOutputLanguage] = useState<OutputLanguage>(readStoredOutputLanguage);
   const [captureJobs, setCaptureJobs] = useState<CaptureJob[]>([]);
@@ -887,8 +766,6 @@ export const App = () => {
           sourceUrl: source.url,
           status: source.status,
           error: source.error,
-          failureKind: source.failureKind ?? null,
-          failureLabel: source.failureLabel ?? null,
           skipped: source.skipped ?? false,
           kind: "source" as const,
           position: source.position,
@@ -901,8 +778,6 @@ export const App = () => {
             sourceUrl: item.sourceUrl,
             status: item.status,
             error: item.error,
-            failureKind: item.failureKind ?? null,
-            failureLabel: item.failureLabel ?? null,
             skipped: item.skipped ?? false,
             kind: "truth" as const,
             position: item.position + 1000,
@@ -931,151 +806,135 @@ export const App = () => {
     };
   }, [pendingItems]);
 
-  const activeProgressLabel =
-    activeOperation?.progressCurrent && activeOperation?.progressTotal
-      ? `${activeOperation.progressCurrent} / ${activeOperation.progressTotal}`
-      : null;
-
   const updateCollectSearchLimit = (value: number) => {
-    if (!Number.isFinite(value)) {
-      return;
-    }
-
+    if (!Number.isFinite(value)) return;
     setCollectSearchLimit(clampNumber(Math.round(value), 1, 100));
   };
 
   const updateCollectReadConcurrency = (value: number) => {
-    if (!Number.isFinite(value)) {
-      return;
-    }
-
+    if (!Number.isFinite(value)) return;
     setCollectReadConcurrency(clampNumber(Math.round(value), 1, 8));
   };
 
   const updateCollectAiConcurrency = (value: number) => {
-    if (!Number.isFinite(value)) {
-      return;
-    }
-
+    if (!Number.isFinite(value)) return;
     setCollectAiConcurrency(clampNumber(Math.round(value), 1, 8));
   };
 
   return (
-    <div className="min-h-screen bg-canvas text-ink selection:bg-accent/20 selection:text-ink font-sans antialiased">
-      {/* Dynamic View Header (Minimalist) */}
-      <div className="fixed top-0 left-0 right-0 h-2 px-8 flex items-center justify-end z-50">
-      </div>
-
-      {/* Main Content Area - Stable container to prevent jumpy transitions */}
+    <div className="min-h-screen bg-white text-ink font-sans antialiased">
       <main className="flex-1 h-screen relative overflow-hidden">
         {loading && progress.length === 0 ? (
-          <div className="h-[60vh] flex flex-col items-center justify-center space-y-4">
-            <Loader2 className="w-10 h-10 text-accent animate-spin opacity-40" />
-            <p className="text-ink/30 font-medium tracking-widest uppercase text-xs">正在连接知识引擎...</p>
+          <div className="h-full flex flex-col items-center justify-center space-y-6">
+            <div className="w-16 h-16 border border-black/[0.05] bg-black/[0.01] flex items-center justify-center animate-pulse">
+               <Loader2 className="w-6 h-6 text-black/10 animate-spin" />
+            </div>
+            <p className="text-[10px] font-black tracking-[0.5em] text-ink/20 uppercase">建立知识引擎连接...</p>
           </div>
         ) : (
           <AnimatePresence mode="wait">
             <motion.div
               key={view}
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
               className="h-full"
             >
               {view === "dashboard" && (
-                <div className="h-full overflow-y-auto custom-scrollbar px-12 pt-12">
+                <div className="h-full overflow-y-auto custom-scrollbar px-16">
                   <DashboardView progress={progress} />
                 </div>
               )}
               {view === "search" && (
-                <div className="h-full overflow-y-auto custom-scrollbar px-12 pt-12">
+                <div className="h-full overflow-y-auto custom-scrollbar px-16">
                   <SearchView />
                 </div>
               )}
-                {view === "truths" && (
-                  <div className="h-full">
-                    <RepositoryView
-                      apiBaseUrl={API_BASE_URL}
-                      refreshKey={selectedCaptureJob?.job.collectionId ?? null}
-                      onExpandTag={handleExpandTag}
-                      onRepositoryChanged={() => void fetchProgress()}
-                    />
-                  </div>
-                )}
+              {view === "truths" && (
+                <div className="h-full">
+                  <RepositoryView
+                    apiBaseUrl={API_BASE_URL}
+                    refreshKey={selectedCaptureJob?.job.collectionId ?? null}
+                    onExpandTag={handleExpandTag}
+                    onRepositoryChanged={() => void fetchProgress()}
+                  />
+                </div>
+              )}
               {view === "collect" && (
-                <div className="flex bg-white h-screen overflow-hidden">
-                  {/* Left: Organized Sidebar */}
-                  <aside className="w-[320px] bg-[#f9f9f9] border-r border-line flex flex-col shrink-0">
-                    <header className="px-8 pt-10 pb-4">
-                      <h1 className="text-[22px] font-bold text-ink tracking-tight">知识采集</h1>
-                      <p className="text-ink/40 text-[11px] mt-1 font-bold leading-relaxed uppercase tracking-widest">Research Station</p>
+                <div className="flex h-screen bg-white overflow-hidden">
+                  {/* Left: Noir Aside */}
+                  <aside className="w-[320px] bg-white border-r border-black/[0.05] flex flex-col shrink-0">
+                    <header className="px-10 pt-10 pb-6">
+                       <div className="flex items-center gap-3 text-[9px] font-black uppercase tracking-[0.4em] text-ink/20">
+                         <span>采集工程</span>
+                         <span className="text-ink/10">|</span>
+                         <span>STATION</span>
+                       </div>
+                       <h1 className="text-[28px] font-bold text-ink tracking-tighter mt-3 uppercase">知识搜集</h1>
                     </header>
 
-                    {/* New Task Input */}
-                    <div className="px-7 pb-6 space-y-4 border-b border-line/40 mb-6 transition-all">
-                      <div className="space-y-2.5">
-                        <div className="px-1 flex items-center justify-between">
-                          <label className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">搜集新内容</label>
+                    {/* New Task Command */}
+                    <div className="px-8 pb-8 space-y-5 border-b border-black/[0.03] mb-6">
+                      <div className="space-y-4">
+                        <div className="px-1">
+                          <label className="text-[9px] font-black text-ink/20 uppercase tracking-[0.3em]">发起新课题</label>
                         </div>
                         <div className="relative group">
                           <input
                             value={collectQuery}
                             onChange={(e) => setCollectQuery(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && handleCollect()}
-                            className="w-full h-9 bg-white border border-line/60 focus:ring-0 focus:border-accent/40 rounded-lg px-3.5 text-[12px] font-medium transition-all outline-none placeholder:text-ink/5"
-                            placeholder="输入研究课题..."
+                            className="w-full h-10 bg-black/[0.01] border-b border-black/10 focus:border-black py-2 pl-1 pr-4 text-[13px] font-bold transition-all outline-none placeholder:text-ink/5 tracking-tight uppercase"
+                            placeholder="输入研究课题关键词..."
                           />
                         </div>
                         <div className="flex gap-2">
                           <select
                             value={collectProvider}
                             onChange={(e) => setCollectProvider(e.target.value as "web-search-api" | "grok-search")}
-                            className="flex-1 h-8 bg-white border border-line/60 rounded-lg px-3 text-[10px] font-bold outline-none cursor-pointer hover:border-accent/30 transition-all appearance-none"
+                            className="flex-1 h-9 bg-transparent border border-black/10 text-[10px] font-black uppercase tracking-widest px-3 outline-none cursor-pointer hover:bg-black/[0.02] transition-all appearance-none"
                           >
-                            <option value="grok-search">Grok 智搜</option>
-                            <option value="web-search-api">全网研究</option>
+                            <option value="grok-search">Grok 智搜引擎</option>
+                            <option value="web-search-api">全网研究接口</option>
                           </select>
                           <button
                             disabled={creatingCaptureJob || !collectQuery.trim()}
                             onClick={handleCollect}
-                            className="h-8 bg-ink text-white px-4 rounded-lg transition-all active:scale-95 disabled:opacity-20 flex items-center justify-center shrink-0"
+                            className="h-9 w-9 bg-black text-white flex items-center justify-center transition-all active:scale-90 disabled:opacity-20"
                           >
-                            {creatingCaptureJob ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <PlusCircle className="w-3.5 h-3.5"/>}
+                            {creatingCaptureJob ? <Loader2 className="w-4 h-4 animate-spin"/> : <PlusCircle className="w-4 h-4"/>}
                           </button>
                         </div>
-                        <div className="rounded-xl border border-line/50 bg-silver/30 px-3 py-2">
-                          <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">输出语言</div>
-                          <div className="mt-1 text-[12px] font-bold text-ink">{getOutputLanguageLabel(preferredOutputLanguage)}</div>
-                          <div className="mt-1 text-[10px] leading-relaxed text-ink/45">
-                            搜索优先英文信源，知识卡片、标签和答案按偏好语言输出。
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-line/50 bg-silver/30 px-3 py-2">
-                          <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">采集策略</div>
-                          <div className="mt-1 flex items-center justify-between gap-3 text-[11px] font-bold text-ink">
-                            <span>信源数量 {collectSearchLimit}</span>
-                            <span>AI 并发 {collectAiConcurrency}</span>
-                          </div>
-                          <div className="mt-1 text-[10px] leading-relaxed text-ink/45">
-                            网页读取并发 {collectReadConcurrency}，可在底部 System 的偏好设置中调整默认值。
-                          </div>
+                        
+                        <div className="bg-black/[0.015] border border-black/[0.03] p-4 space-y-3">
+                           <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">当前配置</span>
+                              <Settings className="w-3 h-3 text-ink/10" />
+                           </div>
+                           <div className="text-[12px] font-bold text-ink/80 flex items-center justify-between">
+                              <span>输出语言</span>
+                              <span>{getOutputLanguageLabel(preferredOutputLanguage)}</span>
+                           </div>
+                           <div className="text-[10px] font-bold text-ink/40 leading-relaxed">
+                              搜索优先匹配英文高质量信源。
+                           </div>
                         </div>
                       </div>
                     </div>
 
-                    {/* Task List */}
+                    {/* History Feed */}
                     <div className="flex-1 overflow-hidden flex flex-col">
-                      <div className="px-8 pb-3 flex items-center justify-between">
-                        <h3 className="text-[9px] font-black text-ink/20 uppercase tracking-[0.2em]">搜集列表</h3>
-                        <div className="text-[9px] font-black text-ink/10">{captureJobs.length}</div>
+                      <div className="px-10 pb-4 flex items-center justify-between">
+                        <h3 className="text-[9px] font-black text-ink/10 uppercase tracking-[0.4em]">采集队列 / HIST</h3>
+                        <div className="text-[9px] font-black text-ink/5 tabular-nums">{captureJobs.length}</div>
                       </div>
                       
-                      <div className="flex-1 overflow-y-auto custom-scrollbar px-3 pb-8">
-                        <div className="space-y-1">
+                      <div className="flex-1 overflow-y-auto no-scrollbar px-4 pb-10">
+                        <div className="space-y-px">
                           {captureJobs.length === 0 ? (
-                            <div className="py-20 text-center border border-dashed border-line/50 rounded-2xl mx-4">
-                              <p className="text-[10px] text-ink/20 font-bold uppercase tracking-widest">暂无采集历史</p>
+                            <div className="py-20 text-center opacity-10">
+                              <p className="text-[10px] font-bold uppercase tracking-widest">暂无记录</p>
                             </div>
                           ) : (
                             captureJobs.map((job) => (
@@ -1086,35 +945,28 @@ export const App = () => {
                                   void fetchCaptureJobs(job.id, true);
                                 }}
                                 className={cn(
-                                  "w-full text-left px-4 py-2.5 rounded-lg transition-all relative group/item mb-1",
-                                  selectedCaptureJobId === job.id
-                                    ? "bg-white shadow-sm ring-1 ring-line/60"
-                                    : "hover:bg-white/40"
+                                  "w-full text-left px-6 py-4 transition-all relative group mb-0.5",
+                                  selectedCaptureJobId === job.id ? "bg-black/[0.03]" : "hover:bg-black/[0.015]"
                                 )}
                               >
                                 {selectedCaptureJobId === job.id && (
-                                  <div className="absolute left-1 top-1/2 -translate-y-1/2 w-1 h-1/2 bg-accent rounded-full" />
+                                  <motion.div layoutId="job-pill" className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-6 bg-black z-10" />
                                 )}
                                 <div className="flex items-center justify-between gap-3">
                                   <div className="min-w-0">
                                     <h4 className={cn(
-                                      "text-[13px] font-bold truncate leading-snug tracking-tight",
-                                      selectedCaptureJobId === job.id ? "text-ink" : "text-ink/70"
+                                      "text-[13px] font-bold truncate tracking-tight uppercase",
+                                      selectedCaptureJobId === job.id ? "text-ink" : "text-ink/40 hover:text-ink/70"
                                     )}>
                                       {job.query}
                                     </h4>
-                                    <div className="flex items-center gap-2 mt-1.5 font-bold uppercase text-[9px] tracking-widest">
-                                      <span className={cn(
-                                        job.status === "completed" ? "text-accent" : "text-ink/40"
-                                      )}>
-                                        {captureStatusLabel[job.status]}
-                                      </span>
-                                      <span className="w-1 h-1 rounded-full bg-line" />
-                                      <span className="text-ink/30 tabular-nums">{job.provider.split('-')[0]}</span>
+                                    <div className="flex items-center gap-3 mt-2 font-black text-[9px] tracking-widest text-ink/10 uppercase">
+                                      <span>{captureStatusLabel[job.status]}</span>
+                                      <span>•</span>
+                                      <span>{job.provider.split('-')[0]}</span>
                                     </div>
                                   </div>
-                                  {job.status === 'processing' && <Loader2 className="w-3.5 h-3.5 animate-spin text-accent/40" />}
-                                  {job.status === 'completed' && <CheckCircle2 className="w-3.5 h-3.5 text-accent/20" />}
+                                  {job.status === 'processing' && <Loader2 className="w-3 h-3 animate-spin text-ink/20" />}
                                 </div>
                               </button>
                             ))
@@ -1124,50 +976,36 @@ export const App = () => {
                     </div>
                   </aside>
 
-                  {/* Right: Focused Content */}
+                  {/* Center: Command Center */}
                   <main className="flex-1 bg-white overflow-y-auto relative custom-scrollbar">
                     {selectedCaptureJob ? (
-                      <div className="px-12 pt-16 pb-32">
-                        {/* Header Section */}
-                        <header className="flex items-end justify-between gap-8 pb-8 border-b border-line/60 mb-8">
-                          <div className="space-y-3">
-                            <h2 className="text-[32px] font-bold text-ink leading-tight tracking-tight">
-                              {selectedCaptureJob.job.query}
-                            </h2>
-                            <div className="flex items-center gap-8">
-                              <div className="flex items-baseline gap-2">
-                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">发现信源 / Sources</span>
-                                <span className="text-base font-bold text-ink">{selectedCaptureJob.job.discoveredSourceCount}</span>
-                              </div>
-                              <div className="flex items-baseline gap-2">
-                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">消耗 / Tokens</span>
-                                <span className="text-base font-bold text-ink">{formatTokens(selectedCaptureJob.job.usage.totalTokens)}</span>
-                              </div>
-                              <div className="flex items-baseline gap-2">
-                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">AI 并发</span>
-                                <span className="text-base font-bold text-ink">{selectedCaptureJob.job.aiConcurrency}</span>
-                              </div>
-                              <div className="flex items-baseline gap-2">
-                                <span className="text-[9px] font-black text-ink/15 uppercase tracking-[0.2em]">输出语言</span>
-                                <span className="text-base font-bold text-ink">{getOutputLanguageLabel(selectedCaptureJob.job.preferredOutputLanguage)}</span>
-                              </div>
-                            </div>
+                      <div className="px-16 pt-12 pb-40">
+                        <header className="flex items-end justify-between gap-12 pb-10 border-b border-black/[0.05] mb-12">
+                          <div className="space-y-6 min-w-0">
+                             <div className="text-[10px] font-black text-ink/20 uppercase tracking-[0.5em]">ACTIVE RESEARCH JOB</div>
+                             <h2 className="text-[36px] font-bold text-ink leading-tight tracking-tight uppercase">
+                               {selectedCaptureJob.job.query}
+                             </h2>
+                             <div className="flex items-center gap-12">
+                                <StatItem label="已发现信源" value={selectedCaptureJob.job.discoveredSourceCount} />
+                                <StatItem label="消耗算力" value={formatTokens(selectedCaptureJob.job.usage.totalTokens)} />
+                                <StatItem label="AI 并发" value={selectedCaptureJob.job.aiConcurrency} />
+                             </div>
                           </div>
 
-                          <div className="flex flex-col items-end gap-2.5 shrink-0 pb-1">
+                          <div className="flex flex-col items-end gap-4 shrink-0">
                              <button
                                 disabled={!canStartReading || startingCaptureProcessing}
                                 onClick={handleStartReading}
-                                className="h-9 bg-ink text-white px-5 rounded-lg text-[11px] font-bold flex items-center gap-2 shadow hover:-translate-y-0.5 active:scale-95 transition-all disabled:opacity-10"
+                                className="px-10 py-3 bg-black text-white text-[11px] font-black uppercase tracking-[0.4em] transition-all hover:translate-y-[-2px] hover:shadow-[0_10px_30px_rgba(0,0,0,0.15)] disabled:opacity-10"
                               >
-                                {startingCaptureProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Zap className="w-3.5 h-3.5 fill-white stroke-none"/>}
-                                <span>启动智搜知识流</span>
+                                {startingCaptureProcessing ? <Loader2 className="w-4 h-4 animate-spin"/> : "启动知识流引擎"}
                               </button>
 
                               {activeOperation && (
-                                <div className="flex items-center gap-2 text-right animate-in fade-in slide-in-from-top-1 duration-500">
-                                  <Loader2 className="w-3 h-3 animate-spin text-accent" />
-                                  <div className="text-[11px] font-bold text-ink/40 tracking-tight">
+                                <div className="flex items-center gap-3 text-right">
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-black/40" />
+                                  <div className="text-[10px] font-black text-ink/30 tracking-[0.2em] uppercase">
                                     {activeOperation.detail}
                                   </div>
                                 </div>
@@ -1175,349 +1013,177 @@ export const App = () => {
                           </div>
                         </header>
 
-                        {/* Notion-Style Table */}
-                        <section>
-                          <div className="mb-6 grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_220px]">
-                            <div className="rounded-[24px] border border-line/50 bg-[#fcfcfc] p-4">
-                              <div className="mb-3 flex items-center justify-between">
-                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-ink/25">阶段分布</div>
-                                <div className="text-[10px] font-bold text-ink/35">
-                                  按执行顺序从左到右，显示当前未完成队列占比
+                        <section className="space-y-12">
+                          {/* Stages Analysis */}
+                          <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] gap-8">
+                             <div className="bg-black/[0.015] border border-black/[0.03] p-8">
+                                <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 mb-8">流水线阶段分布</div>
+                                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                                  {stageBreakdown.stages.map((stage) => (
+                                    <div key={stage.stage} className="space-y-3">
+                                      <div className="text-[9px] font-black uppercase tracking-[0.2em] text-ink/15 truncate">
+                                        {pendingStageLabel[stage.stage]}
+                                      </div>
+                                      <div className="text-[28px] font-bold text-ink tracking-tighter tabular-nums flex items-baseline">
+                                        {stage.percent}<span className="text-[11px] font-black text-ink/10 ml-0.5">%</span>
+                                      </div>
+                                      <div className="text-[9px] font-black text-ink/20 uppercase tracking-widest">{stage.count} 条记录</div>
+                                    </div>
+                                  ))}
                                 </div>
-                              </div>
-                              <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-                                {stageBreakdown.stages.map((stage) => (
-                                  <div
-                                    key={stage.stage}
-                                    className="rounded-2xl border border-line/50 bg-white px-4 py-3"
-                                  >
-                                    <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">
-                                      {pendingStageLabel[stage.stage]}
-                                    </div>
-                                    <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
-                                      {stage.percent}
-                                      <span className="ml-1 text-[11px] font-black text-ink/25">%</span>
-                                    </div>
-                                    <div className="mt-1 text-[10px] font-medium text-ink/40">
-                                      {stage.count} 项
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
+                             </div>
 
-                            <div className="rounded-[24px] border border-[#7c3aed]/15 bg-[#7c3aed]/[0.04] p-4">
-                              <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#7c3aed]">跳过信源</div>
-                              <div className="mt-2 text-[26px] font-bold tracking-tight text-[#7c3aed] tabular-nums">
-                                {sources.filter((source) => source.skipped).length}
-                              </div>
-                              <div className="mt-2 text-[11px] leading-relaxed text-[#5b2aa8]">
-                                连续重试 3 次仍失败的信源会标记为紫色跳过，不再反复死磕。
-                              </div>
-                              {stageBreakdown.failedCount > 0 && (
-                                <div className="mt-3 rounded-xl border border-[#7c3aed]/10 bg-white/70 px-3 py-2 text-[10px] font-medium text-[#5b2aa8]">
-                                  当前失败/阻塞队列：{stageBreakdown.failedCount} 项
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="flex items-center justify-between px-4 mb-4">
-                            <h3 className="text-[11px] font-black text-ink/60 uppercase tracking-[0.2em]">采集与研究任务流</h3>
-                            <div className="text-[10px] font-bold text-ink/30 uppercase tracking-widest">{unifiedDisplayItems.length} ITEMS</div>
-                          </div>
-
-                          <div className="overflow-hidden">
-                            {/* Table Header */}
-                            <div className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 h-[32px] bg-transparent border-b border-line/30 text-[9px] font-black text-ink/20 uppercase tracking-widest">
-                              <div className="text-center">执行状态</div>
-                              <div>项目名称 内容</div>
-                              <div className="text-center">跳转</div>
-                              <div>反馈详情</div>
-                            </div>
-
-                            {/* Table Rows */}
-                            <div className="bg-white min-h-[400px]">
-                              {unifiedDisplayItems.length === 0 ? (
-                                <div className="h-[400px] flex flex-col items-center justify-center space-y-4">
-                                   <div className="w-12 h-12 rounded-full bg-[#f9f9f9] border border-line flex items-center justify-center">
-                                      <ShieldCheck className="w-6 h-6 text-ink/10" />
+                             <div className="border border-black/[0.05] p-8 flex flex-col justify-between">
+                                <div>
+                                   <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20 mb-4">异常/阻塞节点</div>
+                                   <div className="text-[32px] font-bold text-ink/80 tracking-tighter tabular-nums">
+                                      {sources.filter(s => s.skipped).length + stageBreakdown.failedCount}
                                    </div>
-                                   <p className="text-[11px] text-ink/20 font-bold uppercase tracking-[1em] ml-4">队列清空</p>
                                 </div>
-                              ) : (
-                                unifiedDisplayItems.map((item) => (
-                                  <div 
-                                    key={item.id}
-                                    className={cn(
-                                      "grid grid-cols-[60px_2fr_100px_1fr] items-center gap-4 px-6 min-h-[36px] border-b border-line/10 last:border-0 hover:bg-[#f9f9f9] transition-colors group",
-                                      activeOperation?.itemId === item.id && "bg-accent/[0.02]",
-                                      item.skipped && "bg-[#7c3aed]/[0.03]"
-                                    )}
-                                  >
-                                    {/* Icon Col */}
-                                    <div className="flex justify-center">
-                                      {item.skipped ? (
-                                        <MoreHorizontal className="w-4 h-4 text-[#7c3aed]" />
-                                      ) : item.error ? (
-                                        <AlertCircle className="w-4 h-4 text-ember" />
-                                      ) : activeOperation?.itemId === item.id || item.status === "reading" || item.status === "extracting" ? (
-                                        <Loader2 className="w-4 h-4 text-accent animate-spin" />
-                                      ) : item.status === "completed" ? (
-                                        <CheckCircle2 className="w-4 h-4 text-accent/60" />
-                                      ) : (
-                                        <div className="w-1.5 h-1.5 rounded-full bg-line group-hover:scale-125 transition-transform" />
-                                      )}
-                                    </div>
+                                <p className="text-[10px] leading-relaxed text-ink/30 font-bold uppercase tracking-widest">跳过的低质或敏感信源不会再次进入执行循环。</p>
+                             </div>
+                          </div>
 
-                                    {/* Title Col */}
-                                    <div className="min-w-0">
-                                      <div className={cn(
-                                        "text-[13.5px] font-bold truncate tracking-tight transition-colors",
-                                        item.skipped ? "text-[#7c3aed]" : activeOperation?.itemId === item.id ? "text-accent" : "text-ink"
-                                      )}>
-                                        {item.title || "正在研读文档内容..."}
+                          {/* Task Table */}
+                          <div className="space-y-6">
+                            <div className="flex items-center justify-between px-2">
+                               <h3 className="text-[10px] font-black text-ink/20 uppercase tracking-[0.5em]">采集研究详细清单</h3>
+                               <div className="text-[10px] font-black text-ink/10 uppercase tracking-widest">{unifiedDisplayItems.length} ITEMS</div>
+                            </div>
+
+                            <div className="border border-black/[0.05]">
+                               <header className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-6 px-10 h-10 border-b border-black/[0.05] text-[9px] font-black text-ink/20 uppercase tracking-[0.3em]">
+                                 <div className="text-center">状态</div>
+                                 <div>实体 / 来源详情</div>
+                                 <div className="text-center">链接</div>
+                                 <div>反馈说明</div>
+                               </header>
+
+                               <div className="bg-white">
+                                  {unifiedDisplayItems.length === 0 ? (
+                                    <div className="py-32 text-center opacity-5">
+                                       <FolderTree className="w-12 h-12 mx-auto mb-4" />
+                                       <div className="text-[11px] font-black uppercase tracking-[1em]">IDLE</div>
+                                    </div>
+                                  ) : (
+                                    unifiedDisplayItems.map((item) => (
+                                      <div key={item.id} className="grid grid-cols-[60px_2fr_100px_1fr] items-center gap-6 px-10 min-h-[44px] border-b border-black/[0.02] last:border-0 hover:bg-black/[0.015] transition-colors group">
+                                         <div className="flex justify-center">
+                                            {item.skipped ? (
+                                               <MoreHorizontal className="w-4 h-4 text-ink/10" />
+                                            ) : item.error ? (
+                                               <div className="w-1.5 h-1.5 rounded-full bg-ember" />
+                                            ) : item.status === "reading" || item.status === "extracting" || activeOperation?.itemId === item.id ? (
+                                               <Loader2 className="w-3.5 h-3.5 animate-spin text-ink/40" />
+                                            ) : item.status === "completed" ? (
+                                               <CheckCircle2 className="w-3.5 h-3.5 text-black" />
+                                            ) : (
+                                               <div className="w-1 h-1 rounded-full bg-black/10 transition-transform group-hover:scale-150" />
+                                            )}
+                                         </div>
+
+                                         <div className="min-w-0">
+                                            <div className={cn(
+                                              "text-[13.5px] font-bold truncate tracking-tight transition-colors",
+                                              item.skipped ? "text-ink/10" : activeOperation?.itemId === item.id ? "text-ink" : "text-ink/60 group-hover:text-ink"
+                                            )}>
+                                              {item.kind === 'truth' ? (item.title || "正在处理事实条目...") : (item.title || "研读文档内容...")}
+                                            </div>
+                                         </div>
+
+                                         <div className="flex justify-center">
+                                            {item.sourceUrl ? (
+                                              <a href={item.sourceUrl} target="_blank" rel="noreferrer" className="p-2 border border-transparent hover:border-black/10 hover:bg-white text-ink/10 hover:text-black transition-all">
+                                                 <ArrowUpRight className="w-3.5 h-3.5" />
+                                              </a>
+                                            ) : <span className="text-[9px] font-black text-ink/5">--</span>}
+                                         </div>
+
+                                         <div className="text-[11px] font-bold tracking-tight text-ink/30 truncate">
+                                            {item.error ? "执行异常" : (item.kind === "source" ? sourceStatusLabel[item.status as CaptureSourceStatus] : pendingItemStatusLabel[item.status as CapturePendingItemStatus])}
+                                         </div>
                                       </div>
-                                    </div>
-
-                                    {/* Link Col */}
-                                    <div className="flex justify-center">
-                                      {item.sourceUrl ? (
-                                        <a 
-                                          href={item.sourceUrl} 
-                                          target="_blank" 
-                                          rel="noopener noreferrer"
-                                          className="p-1.5 rounded-lg border border-transparent hover:border-line hover:bg-white text-ink/30 hover:text-ink transition-all transform active:scale-90"
-                                        >
-                                          <ExternalLink className="w-3.5 h-3.5" />
-                                        </a>
-                                      ) : (
-                                        <span className="text-ink/10 font-mono text-[9px]">--</span>
-                                      )}
-                                    </div>
-
-                                    {/* Info Col */}
-                                    <div className="min-w-0">
-                                      <div className={cn(
-                                        "text-[11px] font-bold tracking-tight truncate whitespace-nowrap",
-                                        item.skipped ? "text-[#7c3aed]" : item.error ? "text-ember" : "text-ink/40"
-                                      )}>
-                                        {item.error || (item.kind === "source" ? sourceStatusLabel[item.status as CaptureSourceStatus] : pendingItemStatusLabel[item.status as CapturePendingItemStatus])}
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))
-                              )}
+                                    ))
+                                  )}
+                               </div>
                             </div>
                           </div>
                         </section>
                       </div>
                     ) : (
-                      <div className="h-full flex flex-col items-center justify-center p-20 text-center">
-                        <div className="w-24 h-24 rounded-[40px] bg-[#f9f9f9] border border-line flex items-center justify-center mb-8">
-                           <Zap className="w-8 h-8 text-ink/10" />
+                      <div className="h-full flex flex-col items-center justify-center p-20 animate-in fade-in duration-1000">
+                        <div className="w-24 h-24 border border-black/[0.05] bg-black/[0.01] flex items-center justify-center mb-10">
+                           <Zap className="w-8 h-8 text-ink/5" />
                         </div>
-                        <h3 className="text-xl font-bold text-ink">尚未选择采集项</h3>
-                        <p className="text-ink/40 text-sm mt-3 max-w-sm leading-relaxed">请从左侧列表选择一个研究课题，或者发起一个新的采集任务来开始知识流。</p>
+                        <h3 className="text-[20px] font-bold text-ink tracking-tight">未选择采集任务</h3>
+                        <p className="text-ink/20 text-[11px] mt-4 font-black uppercase tracking-[0.4em]">请在左侧列表选择研究课题以查看流水线进度</p>
                       </div>
                     )}
                   </main>
                 </div>
               )}
               {view === "settings" && (
-                <div className="h-full overflow-y-auto custom-scrollbar px-12 pt-16 pb-28">
-                  <div className="max-w-4xl space-y-8">
-                    <header className="space-y-3">
-                      <div className="text-[10px] font-black uppercase tracking-[0.28em] text-ink/20">Preferences</div>
-                      <h1 className="text-[32px] font-bold tracking-tight text-ink">偏好设置</h1>
-                      <p className="max-w-2xl text-[13px] leading-relaxed text-ink/45">
-                        这里控制 AI 生成知识卡片时的默认输出语言，以及新采集任务使用的信源数量与读取并发。搜索仍会优先查找英文高质量资料，再补充偏好语言结果。
-                      </p>
-                    </header>
+                <div className="h-full overflow-y-auto custom-scrollbar px-16 py-12 max-w-4xl mx-auto">
+                  <header className="space-y-6 pb-12 border-b border-black/[0.05]">
+                    <div className="text-[10px] font-black uppercase tracking-[0.5em] text-ink/20">System Preferences</div>
+                    <h1 className="text-[42px] font-bold tracking-tighter text-ink uppercase leading-none">系统偏好设置</h1>
+                    <p className="text-[13px] leading-relaxed text-ink/40 font-medium">定制 AI 的行为逻辑、输出语言规范以及采集引擎的并发负载分布。</p>
+                  </header>
 
-                    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-                      <Card className="p-0 overflow-hidden">
-                        <div className="border-b border-line/50 px-6 py-5">
-                          <div className="text-[11px] font-black uppercase tracking-[0.22em] text-ink/25">语言偏好</div>
-                          <div className="mt-2 text-[20px] font-bold tracking-tight text-ink">知识卡片输出语言</div>
-                        </div>
-
-                        <div className="space-y-3 p-6">
+                  <div className="mt-12 space-y-12">
+                     <section className="space-y-8">
+                        <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">语言治理</div>
+                        <div className="grid gap-4">
                           {OUTPUT_LANGUAGE_OPTIONS.map((option) => (
-                            <label
+                            <button
                               key={option.value}
+                              onClick={() => setPreferredOutputLanguage(option.value)}
                               className={cn(
-                                "flex cursor-pointer items-start gap-4 rounded-2xl border px-4 py-4 transition-all",
+                                "flex items-start gap-6 p-8 border transition-all text-left group",
                                 preferredOutputLanguage === option.value
-                                  ? "border-accent/30 bg-accent/[0.04]"
-                                  : "border-line/60 hover:border-line hover:bg-silver/20",
+                                  ? "bg-black border-black text-white"
+                                  : "bg-white border-black/[0.05] hover:bg-black/[0.01] text-ink"
                               )}
                             >
-                              <input
-                                type="radio"
-                                name="preferred-output-language"
-                                value={option.value}
-                                checked={preferredOutputLanguage === option.value}
-                                onChange={() => setPreferredOutputLanguage(option.value)}
-                                className="mt-1 h-4 w-4 accent-[#007aff]"
-                              />
-                              <div className="min-w-0">
-                                <div className="text-[14px] font-bold tracking-tight text-ink">{option.label}</div>
-                                <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
-                                  {option.description}
-                                </div>
-                              </div>
-                            </label>
+                               <div className={cn("w-5 h-5 rounded-full border flex items-center justify-center mt-1 shrink-0", 
+                                 preferredOutputLanguage === option.value ? "border-white" : "border-black/20")}>
+                                  {preferredOutputLanguage === option.value && <div className="w-2 h-2 bg-white rounded-full" />}
+                               </div>
+                               <div className="space-y-2">
+                                  <div className="text-[16px] font-bold uppercase tracking-tight">{option.label}</div>
+                                  <div className={cn("text-[11px] leading-relaxed font-medium uppercase tracking-widest", 
+                                    preferredOutputLanguage === option.value ? "text-white/40" : "text-ink/30")}>
+                                    {option.description}
+                                  </div>
+                               </div>
+                            </button>
                           ))}
-
-                          <div className="mt-6 border-t border-line/50 pt-6">
-                            <div className="text-[11px] font-black uppercase tracking-[0.22em] text-ink/25">采集默认参数</div>
-                            <div className="mt-4 space-y-4">
-                              <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-4">
-                                <div className="flex items-center justify-between gap-4">
-                                  <div>
-                                    <div className="text-[13px] font-bold tracking-tight text-ink">搜集信息源数量</div>
-                                    <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
-                                      每次新建采集任务时，最多从搜索结果中保留多少个候选信源。
-                                    </div>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={100}
-                                    value={collectSearchLimit}
-                                    onChange={(event) => updateCollectSearchLimit(Number(event.target.value))}
-                                    className="h-10 w-24 rounded-xl border border-line/70 bg-white px-3 text-right text-[14px] font-bold text-ink outline-none transition-all focus:border-accent/40"
-                                  />
-                                </div>
-                                <input
-                                  type="range"
-                                  min={1}
-                                  max={100}
-                                  value={collectSearchLimit}
-                                  onChange={(event) => updateCollectSearchLimit(Number(event.target.value))}
-                                  className="mt-4 h-2 w-full accent-[#007aff]"
-                                />
-                                <div className="mt-2 flex items-center justify-between text-[10px] font-medium text-ink/35">
-                                  <span>更聚焦</span>
-                                  <span>更多候选</span>
-                                </div>
-                              </div>
-
-                              <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-4">
-                                <div className="flex items-center justify-between gap-4">
-                                  <div>
-                                    <div className="text-[13px] font-bold tracking-tight text-ink">AI 请求并发</div>
-                                    <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
-                                      控制同一时间最多能发出多少个 AI / Grok 请求。抽题与分类都会共用这条并发上限。
-                                    </div>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={8}
-                                    value={collectAiConcurrency}
-                                    onChange={(event) => updateCollectAiConcurrency(Number(event.target.value))}
-                                    className="h-10 w-24 rounded-xl border border-line/70 bg-white px-3 text-right text-[14px] font-bold text-ink outline-none transition-all focus:border-accent/40"
-                                  />
-                                </div>
-                                <input
-                                  type="range"
-                                  min={1}
-                                  max={8}
-                                  value={collectAiConcurrency}
-                                  onChange={(event) => updateCollectAiConcurrency(Number(event.target.value))}
-                                  className="mt-4 h-2 w-full accent-[#007aff]"
-                                />
-                                <div className="mt-2 flex items-center justify-between text-[10px] font-medium text-ink/35">
-                                  <span>更稳</span>
-                                  <span>更猛</span>
-                                </div>
-                              </div>
-
-                              <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-4">
-                                <div className="flex items-center justify-between gap-4">
-                                  <div>
-                                    <div className="text-[13px] font-bold tracking-tight text-ink">网页读取并发</div>
-                                    <div className="mt-1 text-[11px] leading-relaxed text-ink/45">
-                                      控制同时抓取多少个网页正文。它主要影响抓取速度，不代表同时分析的 AI 数量。
-                                    </div>
-                                  </div>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={8}
-                                    value={collectReadConcurrency}
-                                    onChange={(event) => updateCollectReadConcurrency(Number(event.target.value))}
-                                    className="h-10 w-24 rounded-xl border border-line/70 bg-white px-3 text-right text-[14px] font-bold text-ink outline-none transition-all focus:border-accent/40"
-                                  />
-                                </div>
-                                <input
-                                  type="range"
-                                  min={1}
-                                  max={8}
-                                  value={collectReadConcurrency}
-                                  onChange={(event) => updateCollectReadConcurrency(Number(event.target.value))}
-                                  className="mt-4 h-2 w-full accent-[#007aff]"
-                                />
-                                <div className="mt-2 flex items-center justify-between text-[10px] font-medium text-ink/35">
-                                  <span>更省</span>
-                                  <span>更快</span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
                         </div>
-                      </Card>
+                     </section>
 
-                      <div className="space-y-4">
-                        <Card compact>
-                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-ink/20">当前默认</div>
-                          <div className="mt-2 text-[24px] font-bold tracking-tight text-ink">
-                            {getOutputLanguageLabel(preferredOutputLanguage)}
-                          </div>
-                          <div className="mt-2 text-[11px] leading-relaxed text-ink/45">
-                            新发起的采集任务会继承这个语言设置，后续卡片标签、答案和解释优先用该语言输出。
-                          </div>
-                        </Card>
-
-                        <Card compact>
-                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-ink/20">采集参数</div>
-                          <div className="mt-3 grid grid-cols-3 gap-3">
-                            <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-3">
-                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">信源数量</div>
-                              <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
-                                {collectSearchLimit}
-                              </div>
-                            </div>
-                            <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-3">
-                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">AI 并发</div>
-                              <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
-                                {collectAiConcurrency}
-                              </div>
-                            </div>
-                            <div className="rounded-2xl border border-line/60 bg-silver/15 px-4 py-3">
-                              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-ink/20">读取并发</div>
-                              <div className="mt-2 text-[24px] font-bold tracking-tight text-ink tabular-nums">
-                                {collectReadConcurrency}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="mt-3 text-[11px] leading-relaxed text-ink/45">
-                            以上配置会直接用于新建任务；已创建的任务仍按创建时参数执行。
-                          </div>
-                        </Card>
-
-                        <Card compact>
-                          <div className="text-[10px] font-black uppercase tracking-[0.2em] text-ink/20">策略说明</div>
-                          <div className="mt-3 space-y-2 text-[11px] leading-relaxed text-ink/50">
-                            <p>1. 检索优先英文资料，保证信源密度和时效性。</p>
-                            <p>2. 英文不够时，再补充偏好语言的信源结果。</p>
-                            <p>3. 到知识卡片层面，题目、标签、标准答案、解释统一回写为偏好语言。</p>
-                          </div>
-                        </Card>
-                      </div>
-                    </div>
+                     <section className="space-y-8">
+                        <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">平衡引擎配置 / LOAD BALANCING</div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                           <div className="border border-black/[0.05] p-8 space-y-6">
+                              <div className="text-[11px] font-black uppercase tracking-[0.3em] text-ink/30">信源检索上限</div>
+                              <div className="text-[42px] font-bold text-ink tracking-tighter">{collectSearchLimit}</div>
+                              <input
+                                type="range" min={1} max={100} value={collectSearchLimit}
+                                onChange={(e) => updateCollectSearchLimit(Number(e.target.value))}
+                                className="w-full accent-black h-1"
+                              />
+                           </div>
+                           <div className="border border-black/[0.05] p-8 space-y-6">
+                              <div className="text-[11px] font-black uppercase tracking-[0.3em] text-ink/30">AI 算力并发控制</div>
+                              <div className="text-[42px] font-bold text-ink tracking-tighter">{collectAiConcurrency}</div>
+                              <input
+                                type="range" min={1} max={8} value={collectAiConcurrency}
+                                onChange={(e) => updateCollectAiConcurrency(Number(e.target.value))}
+                                className="w-full accent-black h-1"
+                              />
+                           </div>
+                        </div>
+                     </section>
                   </div>
                 </div>
               )}
@@ -1526,42 +1192,34 @@ export const App = () => {
         )}
       </main>
 
-      {/* Floating Bottom Dock - Premium Glassmorphism */}
-      <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50">
-        <div className="flex items-center bg-white/60 backdrop-blur-3xl border border-[#efeff1] p-1.5 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.08)] gap-1">
+      {/* Floating Dock - Monochrome Edition */}
+      <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-[100]">
+        <div className="flex items-center bg-white border border-black/10 p-1.5 rounded-full shadow-[0_20px_50px_rgba(0,0,0,0.1)] gap-1">
           <DockItem 
-            icon={LayoutDashboard} 
-            label="Overview" 
-            active={view === "dashboard"} 
-            onClick={() => setView("dashboard")} 
+            icon={LayoutDashboard} label="概览" 
+            active={view === "dashboard"} onClick={() => setView("dashboard")} 
           />
           <DockItem 
-            icon={Search} 
-            label="Explore" 
-            active={view === "search"} 
-            onClick={() => setView("search")} 
+            icon={Search} label="探索" 
+            active={view === "search"} onClick={() => setView("search")} 
           />
           <DockItem 
-            icon={Database} 
-            label="Repository" 
-            active={view === "truths"} 
-            onClick={() => setView("truths")} 
+            icon={Database} label="智库" 
+            active={view === "truths"} onClick={() => setView("truths")} 
           />
           <DockItem 
-            icon={Zap} 
-            label="Collect" 
-            active={view === "collect"} 
-            onClick={() => setView("collect")} 
+            icon={Zap} label="采集" 
+            active={view === "collect"} onClick={() => setView("collect")} 
           />
-          <div className="w-px h-6 bg-[#efeff1] mx-2" />
+          <div className="w-px h-6 bg-black/5 mx-2" />
           <DockItem 
-            icon={Settings} 
-            label="System" 
-            active={view === "settings"} 
-            onClick={() => setView("settings")} 
+            icon={Settings} label="系统" 
+            active={view === "settings"} onClick={() => setView("settings")} 
           />
         </div>
       </div>
     </div>
   );
 };
+
+export default App;
