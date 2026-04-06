@@ -528,7 +528,7 @@ const RepositoryDetailPanel = ({
                   const isAnswer = highlightedAnswer && option.trim() === highlightedAnswer;
                   return (
                     <div key={`${truth.id}-${option}`} className={cn(
-                      "px-6 py-4 border transition-all text-[14px] flex items-center gap-5",
+                      "px-6 py-4 border rounded-sm transition-all text-[14px] flex items-center gap-5",
                       isAnswer ? "bg-reverse text-reverse-text border-reverse" : "bg-canvas border-reverse/[0.06] text-ink/60"
                     )}>
                       <span className={cn("text-[10px] font-black opacity-30", isAnswer && "opacity-100")}>{String.fromCharCode(65 + index)}</span>

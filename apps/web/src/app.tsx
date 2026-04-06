@@ -1205,7 +1205,7 @@ export const App = () => {
                               key={option.value}
                               onClick={() => setPreferredOutputLanguage(option.value)}
                               className={cn(
-                                "flex items-start gap-6 p-8 border transition-all text-left group",
+                                "flex items-start gap-6 p-8 border rounded-sm transition-all text-left group",
                                 preferredOutputLanguage === option.value
                                   ? "bg-reverse border-reverse text-reverse-text"
                                   : "bg-canvas border-reverse/[0.05] hover:bg-reverse/[0.01] text-ink"
@@ -1230,7 +1230,7 @@ export const App = () => {
                      <section className="space-y-8">
                         <div className="text-[10px] font-black uppercase tracking-[0.4em] text-ink/20">平衡引擎配置 / LOAD BALANCING</div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                           <div className="border border-reverse/[0.05] p-8 space-y-6">
+                           <div className="border border-reverse/[0.05] rounded-sm p-8 space-y-6">
                               <div className="text-[11px] font-black uppercase tracking-[0.3em] text-ink/30">信源检索上限</div>
                               <div className="text-[42px] font-bold text-ink tracking-tighter">{collectSearchLimit}</div>
                               <input
@@ -1239,7 +1239,7 @@ export const App = () => {
                                 className="w-full accent-reverse h-1"
                               />
                            </div>
-                           <div className="border border-reverse/[0.05] p-8 space-y-6">
+                           <div className="border border-reverse/[0.05] rounded-sm p-8 space-y-6">
                               <div className="text-[11px] font-black uppercase tracking-[0.3em] text-ink/30">AI 算力并发控制</div>
                               <div className="text-[42px] font-bold text-ink tracking-tighter">{collectAiConcurrency}</div>
                               <input
@@ -1259,7 +1259,7 @@ export const App = () => {
                               key={option.value}
                               onClick={() => setThemePreference(option.value)}
                               className={cn(
-                                "flex items-start gap-6 p-8 border transition-all text-left group rounded-xl",
+                                "flex items-start gap-6 p-8 border transition-all text-left group rounded-sm",
                                 themePreference === option.value
                                   ? "bg-reverse border-reverse text-reverse-text"
                                   : "bg-canvas border-reverse/[0.05] hover:bg-reverse/[0.01] text-ink"
