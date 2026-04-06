@@ -49,6 +49,7 @@ type CaptureJobRow = {
   updated_at: string;
   started_at: string | null;
   finished_at: string | null;
+  deleted_at: string | null;
 };
 
 type CaptureSourceRow = {
@@ -206,6 +207,7 @@ export interface CaptureJobRepository {
   getJob(jobId: string): CaptureJob | null;
   getJobDetail(jobId: string, eventLimit?: number): CaptureJobDetail | null;
   listResumableJobs(): CaptureJob[];
+  deleteJob(jobId: string): boolean;
   updateJob(
     jobId: string,
     patch: {
@@ -295,7 +297,8 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       started_at TEXT,
-      finished_at TEXT
+      finished_at TEXT,
+      deleted_at TEXT
     );
     CREATE TABLE IF NOT EXISTS capture_job_sources (
       id TEXT PRIMARY KEY,
@@ -360,6 +363,7 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
   ensureColumn("capture_job_sources", "last_extract_attempt_at", "TEXT");
   ensureColumn("capture_job_sources", "next_retry_at", "TEXT");
   ensureColumn("capture_jobs", "preferred_output_language", "TEXT DEFAULT 'zh-CN'");
+  ensureColumn("capture_jobs", "deleted_at", "TEXT");
 
   const insertJob = db.query(`
     INSERT INTO capture_jobs (
@@ -367,11 +371,19 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
       prompt_tokens, completion_tokens, total_tokens, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const selectJob = db.query<CaptureJobRow, [string]>(`SELECT * FROM capture_jobs WHERE id = ?`);
-  const listJobsQuery = db.query<CaptureJobRow, []>(`SELECT * FROM capture_jobs ORDER BY created_at DESC`);
-  const resumableJobsQuery = db.query<CaptureJobRow, []>(
-    `SELECT * FROM capture_jobs WHERE status IN ('queued_search', 'searching', 'processing') ORDER BY created_at ASC`,
+  const selectJob = db.query<CaptureJobRow, [string]>(`SELECT * FROM capture_jobs WHERE id = ? AND deleted_at IS NULL`);
+  const selectStoredJob = db.query<CaptureJobRow, [string]>(`SELECT * FROM capture_jobs WHERE id = ?`);
+  const listJobsQuery = db.query<CaptureJobRow, []>(
+    `SELECT * FROM capture_jobs WHERE deleted_at IS NULL ORDER BY created_at DESC`,
   );
+  const resumableJobsQuery = db.query<CaptureJobRow, []>(
+    `SELECT * FROM capture_jobs WHERE deleted_at IS NULL AND status IN ('queued_search', 'searching', 'processing') ORDER BY created_at ASC`,
+  );
+  const softDeleteJob = db.query(`
+    UPDATE capture_jobs
+    SET deleted_at = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?)
+    WHERE id = ? AND deleted_at IS NULL
+  `);
   const insertEvent = db.query(`
     INSERT INTO capture_job_events (job_id, created_at, channel, label, text) VALUES (?, ?, ?, ?, ?)
   `);
@@ -428,7 +440,7 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
   );
 
   const getJobOrThrow = (jobId: string) => {
-    const row = selectJob.get(jobId);
+    const row = selectStoredJob.get(jobId);
 
     if (!row) {
       throw new Error(`Capture job not found: ${jobId}`);
@@ -525,6 +537,11 @@ export const createSqliteCaptureJobRepository = (databasePath: string): CaptureJ
     },
     listResumableJobs() {
       return resumableJobsQuery.all().map(mapJobRow);
+    },
+    deleteJob(jobId) {
+      const deletedAt = nowIso();
+      const result = softDeleteJob.run(deletedAt, deletedAt, deletedAt, jobId) as { changes?: number };
+      return (result.changes ?? 0) > 0;
     },
     updateJob(jobId, patch) {
       return updateJobColumns(jobId, {

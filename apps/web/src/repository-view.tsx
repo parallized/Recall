@@ -251,7 +251,7 @@ const UnreadBadge = ({ count }: { count: number }) => {
   }
 
   return (
-    <span className="inline-flex min-w-4 items-center justify-center rounded-sm bg-reverse px-1 py-0.5 text-[8px] font-black text-reverse-text tabular-nums">
+    <span className="inline-flex min-w-4 items-center justify-center rounded-sm bg-ink/[0.08] px-1 py-0.5 text-[8px] font-black text-ink/50 tabular-nums">
       {count}
     </span>
   );
@@ -329,7 +329,7 @@ const RepositoryTreeNode = ({
              </span>
              <UnreadBadge count={node.unreadCount} />
           </div>
-          <span className="text-[7px] font-bold opacity-0 group-hover/node:opacity-30 transition-all uppercase tracking-widest tabular-nums">
+          <span className="text-[9px] font-black opacity-30 group-hover/node:opacity-50 transition-all uppercase tracking-widest tabular-nums">
             {node.truthCount}
           </span>
         </button>

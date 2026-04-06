@@ -1027,4 +1027,221 @@ describe("capture-job-service", () => {
       ),
     ).toBe(true);
   });
+
+  test("removes completed capture jobs without deleting repository truths", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
+    const databasePath = join(tempDirectory, "recall.sqlite");
+    temporaryDirectories.push(tempDirectory);
+
+    const repository = createSqliteCaptureJobRepository(databasePath);
+    const knowledgeStore = createSqlitePersistence(databasePath);
+
+    const service = new PersistentCaptureJobService({
+      repository,
+      knowledgeStore,
+      providers: [
+        {
+          kind: "grok-search",
+          async search() {
+            return [
+              { title: "React Guide", url: "https://example.com/react-guide", snippet: "React snippet" },
+            ];
+          },
+        },
+      ],
+      sourceReader: {
+        async read(hit) {
+          return {
+            ...hit,
+            content: `Article body for ${hit.title}`,
+          };
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [
+            {
+              id: "frontend",
+              parentId: null,
+              level: 1,
+              name: "Frontend",
+              description: "Frontend knowledge.",
+            },
+            {
+              id: "frontend.web",
+              parentId: "frontend",
+              level: 2,
+              name: "Web",
+              description: "Browser and document work.",
+            },
+            {
+              id: "frontend.web.react",
+              parentId: "frontend.web",
+              level: 3,
+              name: "React",
+              description: "React fundamentals.",
+            },
+          ];
+        },
+      },
+      truthExtractor: {
+        async extract(input) {
+          const document = input.documents[0]!;
+
+          return [
+            {
+              sourceId: document.url,
+              statement: `${document.title} 的关键知识是什么？`,
+              summary: `${document.title} 的摘要`,
+              questionType: "open_ended",
+              answer: `${document.title} 的答案`,
+              explanation: `${document.title} 的解释`,
+              evidenceQuote: `Quote from ${document.title}`,
+              confidence: 0.9,
+            },
+          ];
+        },
+      },
+      tagClassifier: {
+        async classify(input: { truths: TruthDraft[] }) {
+          return {
+            truths: input.truths,
+            assignments: input.truths.map(() => ({
+              level1TagId: "frontend",
+              level2TagId: "frontend.web",
+              level3TagId: "frontend.web.react",
+            })),
+            strippedTruthCount: 0,
+          };
+        },
+      } as any,
+      embedder: {
+        async embed(input: { texts: string[] }) {
+          return input.texts.map(() => [0.1, 0.2, 0.3]);
+        },
+      },
+    });
+
+    const job = await service.createJob({
+      query: "react",
+      provider: "grok-search",
+      searchLimit: 1,
+      readConcurrency: 1,
+    });
+
+    await waitFor(
+      () => repository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "ready_to_read",
+    );
+
+    await service.startProcessing({
+      jobId: job.job.id,
+      readConcurrency: 1,
+    });
+
+    await waitFor(
+      () => repository.getJob(job.job.id),
+      (currentJob) => currentJob.status === "completed",
+      6000,
+    );
+
+    expect(knowledgeStore.listTruths()).toHaveLength(1);
+    expect(service.listJobs()).toHaveLength(1);
+    expect(service.getJobDetail(job.job.id)).not.toBeNull();
+
+    await expect(service.deleteJob(job.job.id)).resolves.toBe(true);
+
+    expect(service.listJobs()).toEqual([]);
+    expect(service.getJobDetail(job.job.id)).toBeNull();
+    expect(repository.getJob(job.job.id)).toBeNull();
+    expect(knowledgeStore.listTruths()).toHaveLength(1);
+    expect(knowledgeStore.listTruths()[0]?.statement).toContain("关键知识");
+  });
+
+  test("stops source discovery when a capture job is removed mid-search", async () => {
+    const tempDirectory = await mkdtemp(join(tmpdir(), "recall-capture-service-"));
+    const databasePath = join(tempDirectory, "recall.sqlite");
+    temporaryDirectories.push(tempDirectory);
+
+    const repository = createSqliteCaptureJobRepository(databasePath);
+    const knowledgeStore = createSqlitePersistence(databasePath);
+    let signalSearchStarted!: () => void;
+    const searchStarted = new Promise<void>((resolve) => {
+      signalSearchStarted = resolve;
+    });
+
+    let unblockSearch!: () => void;
+    const searchBlocked = new Promise<void>((resolve) => {
+      unblockSearch = resolve;
+    });
+
+    const service = new PersistentCaptureJobService({
+      repository,
+      knowledgeStore,
+      providers: [
+        {
+          kind: "grok-search",
+          async search() {
+            signalSearchStarted();
+            await searchBlocked;
+
+            return [
+              { title: "React Guide", url: "https://example.com/react-guide", snippet: "React snippet" },
+            ];
+          },
+        },
+      ],
+      sourceReader: {
+        async read(hit) {
+          return {
+            ...hit,
+            content: `Article body for ${hit.title}`,
+          };
+        },
+      },
+      taxonomyPlanner: {
+        async plan() {
+          return [];
+        },
+      },
+      truthExtractor: {
+        async extract() {
+          return [];
+        },
+      },
+      tagClassifier: {
+        async classify() {
+          return {
+            truths: [],
+            assignments: [],
+            strippedTruthCount: 0,
+          };
+        },
+      } as any,
+      embedder: {
+        async embed() {
+          return [];
+        },
+      },
+    });
+
+    const job = await service.createJob({
+      query: "react",
+      provider: "grok-search",
+      searchLimit: 1,
+      readConcurrency: 1,
+    });
+
+    await searchStarted;
+    await expect(service.deleteJob(job.job.id)).resolves.toBe(true);
+    unblockSearch();
+
+    await sleep(50);
+
+    expect(service.listJobs()).toEqual([]);
+    expect(service.getJobDetail(job.job.id)).toBeNull();
+    expect(repository.getJob(job.job.id)).toBeNull();
+    expect(repository.listSources(job.job.id)).toEqual([]);
+    expect(knowledgeStore.listTruths()).toEqual([]);
+  });
 });

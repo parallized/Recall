@@ -650,6 +650,63 @@ describe("api", () => {
     expect(completed).toBe(true);
   });
 
+  test("removes capture jobs through the HTTP API without touching repository data", async () => {
+    const app = createApp({
+      pipeline: {
+        collect: async () => ({
+          collectionId: "unused",
+          query: "unused",
+          provider: "grok-search",
+          truthCount: 0,
+          sourceCount: 0,
+          taxonomy: [],
+          truths: [],
+        }),
+      },
+      persistence,
+      captureJobs: {
+        listJobs() {
+          return [];
+        },
+        getJobDetail() {
+          return null;
+        },
+        async createJob() {
+          throw new Error("not implemented");
+        },
+        async startProcessing() {
+          throw new Error("not implemented");
+        },
+        async deleteJob(jobId: string) {
+          return jobId === "job-1";
+        },
+        async resumePendingJobs() {},
+      },
+    });
+
+    const okResponse = await app.handle(
+      new Request("http://localhost/capture/jobs/job-1", {
+        method: "DELETE",
+      }),
+    );
+
+    expect(okResponse.status).toBe(200);
+    expect(await okResponse.json()).toEqual({
+      ok: true,
+    });
+
+    const missingResponse = await app.handle(
+      new Request("http://localhost/capture/jobs/job-2", {
+        method: "DELETE",
+      }),
+    );
+
+    expect(missingResponse.status).toBe(404);
+    expect(await missingResponse.json()).toEqual({
+      message: "Capture job not found: job-2",
+    });
+  });
+
   test("prunes orphan taxonomy left by older builds on restart", () => {
     const tempDirectory = mkdtempSync(join(tmpdir(), "recall-api-"));
     const databasePath = join(tempDirectory, "recall.sqlite");

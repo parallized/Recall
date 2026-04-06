@@ -19,7 +19,8 @@ import {
   ExternalLink,
   MoreHorizontal,
   ArrowUpRight,
-  FolderTree
+  FolderTree,
+  X
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { clsx, type ClassValue } from "clsx";
@@ -660,6 +661,25 @@ export const App = () => {
     }
   };
 
+  const removeCaptureJob = async (jobId: string) => {
+    setCollectError(null);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/capture/jobs/${jobId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error(await readErrorResponse(response));
+      }
+
+      await fetchCaptureJobs(selectedCaptureJobId === jobId ? undefined : selectedCaptureJobId ?? undefined, true);
+    } catch (e) {
+      console.error(e);
+      setCollectError(e instanceof Error ? e.message : "无法移除采集任务");
+    }
+  };
+
   const handleCollect = async () => {
     if (!collectQuery.trim() || creatingCaptureJob) return;
 
@@ -993,7 +1013,7 @@ export const App = () => {
                                   <div className="min-w-0">
                                     <h4 className={cn(
                                       "text-[13px] font-bold truncate tracking-tight uppercase",
-                                      selectedCaptureJobId === job.id ? "text-ink" : "text-ink/40 hover:text-ink/70"
+                                      selectedCaptureJobId === job.id ? "text-ink" : "text-ink/40 group-hover:text-ink/70"
                                     )}>
                                       {job.query}
                                     </h4>
@@ -1003,7 +1023,18 @@ export const App = () => {
                                       <span>{job.provider.split('-')[0]}</span>
                                     </div>
                                   </div>
-                                  {job.status === 'processing' && <Loader2 className="w-3 h-3 animate-spin text-ink/40" />}
+                                  <div className="flex items-center">
+                                    {job.status === 'processing' && <Loader2 className="w-3 h-3 animate-spin text-ink/40 mr-2" />}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void removeCaptureJob(job.id);
+                                      }}
+                                      className="opacity-0 group-hover:opacity-100 p-1.5 text-ink/20 hover:text-ink/60 transition-all rounded-md hover:bg-ink/5"
+                                    >
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </div>
                                 </div>
                               </button>
                             ))

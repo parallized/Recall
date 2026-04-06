@@ -155,6 +155,13 @@ const defaultRetryPolicy: CaptureJobRetryPolicy = {
   baseDelayMs: 3_000,
 };
 
+class CaptureJobCancelledError extends Error {
+  constructor(jobId: string) {
+    super(`Capture job removed: ${jobId}`);
+    this.name = "CaptureJobCancelledError";
+  }
+}
+
 const extractLogDirectoryFromMessage = (message: string | null) => {
   if (!message) {
     return null;
@@ -338,6 +345,7 @@ export interface CaptureJobService {
   getJobDetail(jobId: string): CaptureJobDetail | null;
   createJob(input: CreateCaptureJobInput): Promise<CaptureJobDetail>;
   startProcessing(input: StartCaptureProcessingInput): Promise<CaptureJobDetail>;
+  deleteJob(jobId: string): Promise<boolean>;
   resumePendingJobs(): Promise<void>;
 }
 
@@ -345,6 +353,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
   private readonly runningJobs = new Map<string, Promise<void>>();
   private readonly retryPolicy: CaptureJobRetryPolicy;
   private readonly activeOperations = new Map<string, CaptureActiveOperation>();
+  private readonly cancelledJobs = new Set<string>();
 
   constructor(private readonly options: CaptureJobServiceDependencies) {
     this.retryPolicy = {
@@ -413,6 +422,25 @@ export class PersistentCaptureJobService implements CaptureJobService {
     this.runInBackground(job.id, () => this.runProcessing(job.id));
 
     return this.getRequiredDetail(job.id);
+  }
+
+  async deleteJob(jobId: string) {
+    const job = this.options.repository.getJob(jobId);
+
+    if (!job) {
+      return false;
+    }
+
+    this.cancelledJobs.add(jobId);
+    this.setActiveOperation(jobId, null);
+
+    const deleted = this.options.repository.deleteJob(jobId);
+
+    if (!deleted || !this.runningJobs.has(jobId)) {
+      this.cancelledJobs.delete(jobId);
+    }
+
+    return deleted;
   }
 
   async resumePendingJobs() {
@@ -720,6 +748,10 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private appendStatus(jobId: string, label: string, text: string) {
+    if (this.shouldSkipJobWrites(jobId)) {
+      return;
+    }
+
     this.options.repository.appendEvent(jobId, {
       channel: "status",
       label,
@@ -728,6 +760,10 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private appendError(jobId: string, label: string, text: string) {
+    if (this.shouldSkipJobWrites(jobId)) {
+      return;
+    }
+
     this.options.repository.appendEvent(jobId, {
       channel: "error",
       label,
@@ -737,10 +773,20 @@ export class PersistentCaptureJobService implements CaptureJobService {
 
   private buildUsageReporter(jobId: string): ProgressReporter {
     return async (event) => {
-      if (event.type === "usage") {
+      if (event.type === "usage" && !this.shouldSkipJobWrites(jobId)) {
         this.options.repository.addUsage(jobId, event.usage);
       }
     };
+  }
+
+  private shouldSkipJobWrites(jobId: string) {
+    return this.cancelledJobs.has(jobId) || !this.options.repository.getJob(jobId);
+  }
+
+  private throwIfCancelled(jobId: string) {
+    if (this.cancelledJobs.has(jobId)) {
+      throw new CaptureJobCancelledError(jobId);
+    }
   }
 
   private isRetryReady(source: CaptureSource) {
@@ -784,6 +830,8 @@ export class PersistentCaptureJobService implements CaptureJobService {
     attemptCount: number;
     error: string;
   }) {
+    this.throwIfCancelled(input.jobId);
+
     const maxAttempts =
       input.stage === "read" ? this.retryPolicy.maxReadAttempts : this.retryPolicy.maxExtractAttempts;
     const presentedFailure = this.presentFailure(input.error, input.attemptCount >= maxAttempts, input.attemptCount);
@@ -841,6 +889,10 @@ export class PersistentCaptureJobService implements CaptureJobService {
       if (this.runningJobs.get(jobId) === task) {
         this.runningJobs.delete(jobId);
       }
+
+      if (!this.runningJobs.has(jobId)) {
+        this.cancelledJobs.delete(jobId);
+      }
     });
 
     this.runningJobs.set(jobId, task);
@@ -858,6 +910,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     }
 
     try {
+      this.throwIfCancelled(jobId);
       this.options.repository.updateJob(jobId, {
         status: "searching",
         phase: "search",
@@ -890,12 +943,14 @@ export class PersistentCaptureJobService implements CaptureJobService {
           reporter: this.buildUsageReporter(jobId),
         }),
       );
+      this.throwIfCancelled(jobId);
 
       if (searchHits.length === 0) {
         throw new Error("Search returned zero source URLs.");
       }
 
       const storedSources = this.options.repository.replaceSources(jobId, searchHits);
+      this.throwIfCancelled(jobId);
       this.options.repository.updateJob(jobId, {
         status: "ready_to_read",
         phase: "read",
@@ -908,14 +963,21 @@ export class PersistentCaptureJobService implements CaptureJobService {
         `Cached ${storedSources.length} sources. You can start reading whenever you want.`,
       );
     } catch (error) {
+      if (error instanceof CaptureJobCancelledError) {
+        return;
+      }
+
       const message = toErrorMessage(error);
-      this.options.repository.updateJob(jobId, {
-        status: "failed",
-        phase: "search",
-        lastError: message,
-        finishedAt: new Date().toISOString(),
-      });
-      this.appendError(jobId, "SEARCH", message);
+
+      if (!this.shouldSkipJobWrites(jobId)) {
+        this.options.repository.updateJob(jobId, {
+          status: "failed",
+          phase: "search",
+          lastError: message,
+          finishedAt: new Date().toISOString(),
+        });
+        this.appendError(jobId, "SEARCH", message);
+      }
     } finally {
       this.setActiveOperation(jobId, null);
     }
@@ -931,6 +993,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
     const reporter = this.buildUsageReporter(jobId);
 
     try {
+      this.throwIfCancelled(jobId);
       this.options.repository.updateJob(jobId, {
         status: "processing",
         phase: "read",
@@ -948,11 +1011,15 @@ export class PersistentCaptureJobService implements CaptureJobService {
       await this.processSources(jobId, reporter);
       await this.finalizeCollection(jobId, reporter);
     } catch (error) {
+      if (error instanceof CaptureJobCancelledError) {
+        return;
+      }
+
       const message = toErrorMessage(error);
       const job = this.options.repository.getJob(jobId);
       const activeOperation = this.activeOperations.get(jobId);
 
-      if (activeOperation) {
+      if (activeOperation && !this.shouldSkipJobWrites(jobId)) {
         this.setActiveOperation(jobId, {
           ...activeOperation,
           status: "blocked_after_failure",
@@ -960,21 +1027,29 @@ export class PersistentCaptureJobService implements CaptureJobService {
         });
       }
 
-      this.options.repository.updateJob(jobId, {
-        status: "failed",
-        phase: job?.phase ?? "read",
-        lastError: message,
-        finishedAt: new Date().toISOString(),
-      });
-      this.appendError(jobId, "PROCESS", message);
+      if (!this.shouldSkipJobWrites(jobId)) {
+        this.options.repository.updateJob(jobId, {
+          status: "failed",
+          phase: job?.phase ?? "read",
+          lastError: message,
+          finishedAt: new Date().toISOString(),
+        });
+        this.appendError(jobId, "PROCESS", message);
+      }
+    } finally {
+      this.setActiveOperation(jobId, null);
     }
   }
 
   private async resumeInterruptedSources(jobId: string) {
+    this.throwIfCancelled(jobId);
+
     const sources = this.options.repository.listSources(jobId);
     let recoveredCount = 0;
 
     for (const source of sources) {
+      this.throwIfCancelled(jobId);
+
       if (source.status === "reading") {
         this.options.repository.updateSource(source.id, {
           status: source.contentCached ? "pending_extract" : "pending_read",
@@ -1026,6 +1101,8 @@ export class PersistentCaptureJobService implements CaptureJobService {
   private async processSources(jobId: string, reporter: ProgressReporter) {
     const job = this.requireJob(jobId);
     while (true) {
+      this.throwIfCancelled(jobId);
+
       const queue = new AsyncQueue<QueuedDocument>();
       const sources = this.options.repository.listSources(jobId);
       const preloadedSources = sources.filter(
@@ -1070,22 +1147,33 @@ export class PersistentCaptureJobService implements CaptureJobService {
         continue;
       }
 
-      for (const source of [...preloadedSources, ...cachedSources]) {
-        await this.enqueueCachedSource(jobId, source, queue);
+      try {
+        for (const source of [...preloadedSources, ...cachedSources]) {
+          this.throwIfCancelled(jobId);
+          await this.enqueueCachedSource(jobId, source, queue);
+        }
+
+        const aiWorker = this.consumeQueuedDocuments(jobId, queue, reporter);
+
+        try {
+          await runWithConcurrency(networkSources, job.readConcurrency, async (source) => {
+            await this.readSource(jobId, source, queue);
+          });
+        } finally {
+          queue.close();
+        }
+
+        await aiWorker;
+      } catch (error) {
+        queue.close();
+        throw error;
       }
-
-      const aiWorker = this.consumeQueuedDocuments(jobId, queue, reporter);
-
-      await runWithConcurrency(networkSources, job.readConcurrency, async (source) => {
-        await this.readSource(jobId, source, queue);
-      });
-
-      queue.close();
-      await aiWorker;
     }
   }
 
   private async enqueueCachedSource(jobId: string, source: CaptureSource, queue: AsyncQueue<QueuedDocument>) {
+    this.throwIfCancelled(jobId);
+
     const cache = this.options.repository.getSourceCache(source.url);
 
     if (!cache?.content) {
@@ -1099,6 +1187,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       fetchedAt: cache.fetchedAt,
       error: null,
     });
+    this.throwIfCancelled(jobId);
 
     this.appendStatus(jobId, "CACHE", `Reused cached content for ${updatedSource.title}.`);
     queue.push({
@@ -1113,6 +1202,8 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private async readSource(jobId: string, source: CaptureSource, queue: AsyncQueue<QueuedDocument>) {
+    this.throwIfCancelled(jobId);
+
     const startedAt = new Date().toISOString();
     this.options.repository.updateSource(source.id, {
       status: "reading",
@@ -1129,6 +1220,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
         title: source.title,
         snippet: source.snippet,
       });
+      this.throwIfCancelled(jobId);
       const fetchedAt = new Date().toISOString();
 
       this.options.repository.upsertSourceCache({
@@ -1154,6 +1246,10 @@ export class PersistentCaptureJobService implements CaptureJobService {
         document,
       });
     } catch (error) {
+      if (error instanceof CaptureJobCancelledError || this.cancelledJobs.has(jobId)) {
+        throw new CaptureJobCancelledError(jobId);
+      }
+
       const message = toErrorMessage(error);
       this.options.repository.upsertSourceCache({
         url: source.url,
@@ -1182,11 +1278,14 @@ export class PersistentCaptureJobService implements CaptureJobService {
     await Promise.all(
       Array.from({ length: aiConcurrency }, async () => {
         while (true) {
+          this.throwIfCancelled(jobId);
           const item = await queue.next();
 
           if (!item) {
             break;
           }
+
+          this.throwIfCancelled(jobId);
 
           this.appendStatus(jobId, "QUESTION", `${item.source.title}: waiting for an AI extraction slot.`);
 
@@ -1219,6 +1318,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
               preferredOutputLanguage: job.preferredOutputLanguage,
               reporter,
             });
+            this.throwIfCancelled(jobId);
 
             this.options.repository.replaceSourceTruthDrafts(jobId, source.url, drafts);
             this.options.repository.updateSource(source.id, {
@@ -1230,6 +1330,11 @@ export class PersistentCaptureJobService implements CaptureJobService {
             });
             this.appendStatus(jobId, "QUESTION", `${source.title}: extracted ${drafts.length} study-question drafts.`);
           } catch (error) {
+            if (error instanceof CaptureJobCancelledError || this.cancelledJobs.has(jobId)) {
+              queue.close();
+              return;
+            }
+
             const message = toErrorMessage(error);
             await this.scheduleRetry({
               jobId,
@@ -1247,6 +1352,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private async finalizeCollection(jobId: string, reporter: ProgressReporter) {
+    this.throwIfCancelled(jobId);
     const job = this.requireJob(jobId);
     const storedDrafts = deduplicateTruths(this.options.repository.listTruthDrafts(jobId)) as StoredTruthDraft[];
     const drafts = storedDrafts.map((draft) => ({
@@ -1267,6 +1373,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       throw new Error("No study-question drafts were extracted from cached sources.");
     }
 
+    this.throwIfCancelled(jobId);
     this.options.repository.updateJob(jobId, {
       phase: "taxonomy",
     });
@@ -1290,8 +1397,10 @@ export class PersistentCaptureJobService implements CaptureJobService {
       preferredOutputLanguage: job.preferredOutputLanguage,
       reporter,
     });
+    this.throwIfCancelled(jobId);
     const taxonomy = mergeTaxonomy(existingTaxonomy, plannedTaxonomy);
 
+    this.throwIfCancelled(jobId);
     this.options.repository.updateJob(jobId, {
       phase: "classify",
     });
@@ -1305,6 +1414,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
         preferredOutputLanguage: job.preferredOutputLanguage,
         reporter,
         onTruthStart: async ({ truth, index, total }) => {
+          this.throwIfCancelled(jobId);
           const source = sourceByUrl.get(truth.sourceId);
           const itemId = draftIdByTruthKey.get(truthIdentityKey(truth)) ?? null;
           this.setActiveOperation(jobId, {
@@ -1321,6 +1431,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
         },
       }),
     );
+    this.throwIfCancelled(jobId);
 
     if (classification.truths.length === 0) {
       throw new Error("All study-question drafts were stripped during taxonomy classification.");
@@ -1334,6 +1445,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       );
     }
 
+    this.throwIfCancelled(jobId);
     this.options.repository.updateJob(jobId, {
       phase: "embed",
     });
@@ -1352,7 +1464,9 @@ export class PersistentCaptureJobService implements CaptureJobService {
     const embeddings = await this.options.embedder.embed({
       texts: classification.truths.map(describeStudyCard),
     });
+    this.throwIfCancelled(jobId);
 
+    this.throwIfCancelled(jobId);
     this.options.repository.updateJob(jobId, {
       phase: "persist",
     });
@@ -1369,6 +1483,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       startedAt: new Date().toISOString(),
     });
 
+    this.throwIfCancelled(jobId);
     const truths: CollectedTruth[] = classification.truths.map((truth, index) => ({
       id: crypto.randomUUID(),
       statement: truth.statement,
@@ -1386,6 +1501,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       embedding: embeddings[index],
     }));
 
+    this.throwIfCancelled(jobId);
     const saved = this.options.knowledgeStore.saveCollection({
       collectionId: crypto.randomUUID(),
       query: job.query,
@@ -1396,6 +1512,7 @@ export class PersistentCaptureJobService implements CaptureJobService {
       truths,
     });
 
+    this.throwIfCancelled(jobId);
     this.options.repository.updateJob(jobId, {
       status: "completed",
       phase: "persist",
@@ -1414,9 +1531,14 @@ export class PersistentCaptureJobService implements CaptureJobService {
   }
 
   private requireJob(jobId: string) {
+    this.throwIfCancelled(jobId);
     const job = this.options.repository.getJob(jobId);
 
     if (!job) {
+      if (this.cancelledJobs.has(jobId)) {
+        throw new CaptureJobCancelledError(jobId);
+      }
+
       throw new Error(`Capture job not found: ${jobId}`);
     }
 

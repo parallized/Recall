@@ -224,6 +224,27 @@ export const createApp = ({
 
       return detail;
     })
+    .delete("/capture/jobs/:id", async ({ params, set }) => {
+      if (!captureJobs) {
+        set.status = 503;
+        return {
+          message: "Capture jobs are not configured.",
+        };
+      }
+
+      const removed = await captureJobs.deleteJob(params.id);
+
+      if (!removed) {
+        set.status = 404;
+        return {
+          message: `Capture job not found: ${params.id}`,
+        };
+      }
+
+      return {
+        ok: true,
+      };
+    })
     .post("/capture/jobs", async ({ body, set }) => {
       if (!captureJobs) {
         set.status = 503;
